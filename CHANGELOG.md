@@ -18,3 +18,5 @@
   checksum.
 - A sync auth token over plain `http://` to a host that is not loopback
   stops startup.
+- `notes` example: a JSON notes API. Run it with
+  `cargo run --example notes`.
