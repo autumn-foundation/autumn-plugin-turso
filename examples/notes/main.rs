@@ -1,4 +1,6 @@
 //! A JSON notes API on Turso. Run with `cargo run --example notes`.
+//!
+//! The example has no authentication. Do not deploy it as is.
 
 mod app;
 

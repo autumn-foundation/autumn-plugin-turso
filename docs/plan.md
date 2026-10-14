@@ -115,6 +115,8 @@ run the same code, so the example cannot become out of date.
 
 ## 1. Brainstorming
 
+Ideas. We keep the marked ones (✓).
+
 - ✓ A JSON notes API: create, list, get and delete notes.
 - ✓ `cargo run --example notes` with no config and no server.
 - ✓ Migrations as `const` data.
@@ -134,11 +136,14 @@ Question: "How can we make this example bad?" Each answer gives a control.
 | How to make it bad | Control |
 | --- | --- |
 | The example does not compile after an API change. | Tests compile and run the example code. Clippy checks `--all-targets`. |
-| The example shows SQL made from user text. | Use bound parameters. A test stores `'; DROP TABLE notes; --`. |
+| The example shows SQL made from user text. | Use bound parameters. A test stores `'); DROP TABLE notes; --`. |
 | The example hides errors with `unwrap`. | Handlers return `AutumnResult`. No `unwrap` in the example. |
 | A missing note gives `500`. | Return `404`. A test checks it. |
 | An empty or very long note is stored. | Return `422`. A test checks it. |
-| The example writes into the source tree. | Default path is `data/notes.db`. `/data` is in `.gitignore`. |
+| Git tracks the database files. | The default path is `data/notes.db`. `.gitignore` has `/data`. Run the example from the repository root. |
+| A list request sends all rows. | A page has 100 notes or fewer. `?after=<id>` gives the next page. |
+| A new note gets the id of a deleted note. | Use `AUTOINCREMENT`. A test checks it. |
+| Users deploy the example as is. | The docs say that it has no authentication. |
 | Data is lost at restart. | A test writes, closes, starts again and reads. |
 | Text is long and hard to read. | Short comments in ASD-STE100. |
 
@@ -165,10 +170,12 @@ Question: "How can we make this example bad?" Each answer gives a control.
 - **EX2 — Plugin use.** The example adds `TursoPlugin` with `const`
   migrations and gets the database with the `Turso` extractor.
 - **EX3 — API.** `POST /notes` gives `201` and the note. `GET /notes` gives
-  all notes in id order. `GET /notes/{id}` gives `200` or `404`.
+  notes in id order, 100 or fewer. `?after=<id>` gives the next page. `GET /notes/{id}` gives `200` or `404`.
   `DELETE /notes/{id}` gives `204` or `404`.
 - **EX4 — Input checks.** An empty note or a note longer than 1000
-  characters gives `422`. SQL text in a note is stored as data.
+  Unicode code points gives `422`. Bad JSON or a bad id gives `400`. The
+  app stores the note text as sent. The app stores SQL text in a note as
+  data. A new note does not get the id of a deleted note.
 - **EX5 — Durability.** A note in a file database is there after a restart.
 - **EX6 — Health.** The example app shows the `turso` health component as
   `UP`.

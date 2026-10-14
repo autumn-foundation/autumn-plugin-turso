@@ -1,4 +1,4 @@
-//! EX1–EX7: the `notes` example app.
+//! EX1–EX6: the `notes` example app.
 
 #[path = "../examples/notes/app.rs"]
 mod notes;
@@ -144,6 +144,13 @@ async fn notes_survive_a_restart() {
     let second = client_at(&dir, &path);
     let list: Value = second.get("/notes").send().await.json();
     assert_eq!(list, json!([note]));
+    // Close before `dir` drops. Windows cannot delete an open file.
+    second
+        .state()
+        .extension::<Turso>()
+        .expect("handle")
+        .close()
+        .await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -155,8 +162,87 @@ async fn health_shows_turso_up() {
 }
 
 #[test]
-fn default_path_is_under_data() {
-    assert_eq!(notes::DB_PATH, "data/notes.db");
+fn plugin_uses_default_path() {
     let text = format!("{:?}", notes::plugin());
     assert!(text.contains("data/notes.db"), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn body_is_stored_as_sent() {
+    let dir = tempfile::tempdir().expect("dir");
+    let client = client(&dir);
+    let note = create(&client, "  hi \n").await;
+    assert_eq!(note["body"], "  hi \n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleted_ids_are_not_used_again() {
+    let dir = tempfile::tempdir().expect("dir");
+    let client = client(&dir);
+    create(&client, "one").await;
+    let second = create(&client, "two").await;
+    client
+        .delete(&format!("/notes/{}", second["id"]))
+        .send()
+        .await
+        .assert_status(204);
+    let third = create(&client, "three").await;
+    assert!(third["id"].as_i64() > second["id"].as_i64(), "{third}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_has_a_limit_and_an_after_cursor() {
+    let dir = tempfile::tempdir().expect("dir");
+    let client = client(&dir);
+    for n in 0..=notes::MAX_LIST {
+        create(&client, &n.to_string()).await;
+    }
+    let page: Vec<Value> = client.get("/notes").send().await.json();
+    let max = usize::try_from(notes::MAX_LIST).expect("fits");
+    assert_eq!(page.len(), max);
+    let last = &page[max - 1]["id"];
+    let rest: Value = client
+        .get(&format!("/notes?after={last}"))
+        .send()
+        .await
+        .json();
+    assert_eq!(rest.as_array().map(Vec::len), Some(1), "{rest}");
+    assert_eq!(rest[0]["body"], notes::MAX_LIST.to_string());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bad_requests_give_4xx() {
+    let dir = tempfile::tempdir().expect("dir");
+    let client = client(&dir);
+    for (uri, status) in [
+        ("/notes/abc", 400),
+        ("/notes/1.5", 400),
+        ("/notes/99999999999999999999", 400),
+        ("/notes/-1", 404),
+        ("/notes/0", 404),
+        ("/notes?after=abc", 400),
+    ] {
+        client.get(uri).send().await.assert_status(status);
+    }
+    for body in [json!({}), json!({ "body": null }), json!({ "body": 1 })] {
+        client
+            .post("/notes")
+            .json(&body)
+            .send()
+            .await
+            .assert_status(422);
+    }
+    client
+        .post("/notes")
+        .header("content-type", "application/json")
+        .body("{not json")
+        .send()
+        .await
+        .assert_status(400);
+    client
+        .post("/notes")
+        .body(r#"{"body":"x"}"#)
+        .send()
+        .await
+        .assert_status(415);
 }

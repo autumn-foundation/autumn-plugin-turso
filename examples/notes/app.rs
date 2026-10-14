@@ -7,16 +7,20 @@ use autumn_web::prelude::*;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
-/// The database file.
+/// The database file. The path is relative to the current directory.
 pub const DB_PATH: &str = "data/notes.db";
 
-/// The maximum note length in characters.
+/// The maximum note length in Unicode code points.
 pub const MAX_BODY_CHARS: usize = 1000;
+
+/// The maximum number of notes in one list response.
+pub const MAX_LIST: u32 = 100;
 
 /// The schema. Add new migrations at the end. Do not edit old ones.
 const MIGRATIONS: [Migration; 1] = [Migration::new(
     "0001_notes",
-    "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT NOT NULL);",
+    // `AUTOINCREMENT` does not use the id of a deleted note again.
+    "CREATE TABLE notes (id INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT NOT NULL);",
 )];
 
 /// A stored note.
@@ -32,6 +36,14 @@ pub struct NewNote {
     body: String,
 }
 
+/// The query for a list request.
+#[derive(Debug, Deserialize)]
+pub struct ListQuery {
+    /// Show only notes with an id larger than this.
+    #[serde(default)]
+    after: i64,
+}
+
 /// The plugin with the app migrations.
 pub fn plugin() -> TursoPlugin {
     TursoPlugin::new().path(DB_PATH).migrations(MIGRATIONS)
@@ -42,10 +54,14 @@ pub fn routes() -> Vec<Route> {
     routes![list_notes, create_note, get_note, delete_note]
 }
 
+/// Give at most `MAX_LIST` notes. Use `?after=<last id>` for the next page.
 #[get("/notes")]
-async fn list_notes(db: Turso) -> AutumnResult<Json<Vec<Note>>> {
+async fn list_notes(db: Turso, Query(query): Query<ListQuery>) -> AutumnResult<Json<Vec<Note>>> {
     let rows = db
-        .query("SELECT id, body FROM notes ORDER BY id", ())
+        .query(
+            "SELECT id, body FROM notes WHERE id > ?1 ORDER BY id LIMIT ?2",
+            (query.after, i64::from(MAX_LIST)),
+        )
         .await?;
     let notes = rows.iter().map(note).collect::<Result<_, _>>()?;
     Ok(Json(notes))
@@ -56,8 +72,9 @@ async fn create_note(
     db: Turso,
     Json(new): Json<NewNote>,
 ) -> AutumnResult<(StatusCode, Json<Note>)> {
-    let body = new.body.trim();
-    if body.is_empty() || body.chars().count() > MAX_BODY_CHARS {
+    // The app stores the text as sent. Only the check ignores white space.
+    let body = new.body;
+    if body.trim().is_empty() || body.chars().count() > MAX_BODY_CHARS {
         return Err(AutumnError::unprocessable_msg(format!(
             "body must have 1 to {MAX_BODY_CHARS} characters"
         )));
@@ -92,7 +109,7 @@ async fn delete_note(db: Turso, Path(id): Path<i64>) -> AutumnResult<StatusCode>
     }
 }
 
-/// Read one `id, body` row.
+/// Make a `Note` from an `id, body` row.
 fn note(row: &Row) -> turso::Result<Note> {
     Ok(Note {
         id: row.get(0)?,

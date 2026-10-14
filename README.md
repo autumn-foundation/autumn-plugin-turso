@@ -55,18 +55,25 @@ warning.
 ## Example
 
 [`examples/notes`](https://github.com/autumn-foundation/autumn-plugin-turso/tree/main/examples/notes) is a JSON notes API. It shows
-migrations, the `Turso` extractor, bound parameters and error codes.
+migrations, the `Turso` extractor, bound parameters and HTTP status codes.
 
 ```sh
 cargo run --example notes    # Listens on port 3000. Writes data/notes.db.
 curl -X POST localhost:3000/notes -H 'content-type: application/json' -d '{"body":"buy milk"}'
 curl localhost:3000/notes      # [{"id":1,"body":"buy milk"}]
+curl 'localhost:3000/notes?after=100'   # The next page. A page has 100 notes or fewer.
 curl localhost:3000/notes/1    # 200, or 404 when the note is missing.
 curl -X DELETE localhost:3000/notes/1   # 204, or 404.
 ```
 
-An empty note, or a note longer than 1000 characters, gives `422`.
-`tests/example.rs` runs the same code.
+- The app stores the note text as sent.
+- An empty note, or a note longer than 1000 Unicode code points, gives
+  `422`. A missing `body` field also gives `422`. Bad JSON or a bad id
+  gives `400`.
+- Run the example from the repository root. Git ignores `/data`.
+- The example has no authentication. Do not deploy it as is. In the `dev`
+  profile, Autumn allows CORS from all origins.
+- `tests/example.rs` runs the same code.
 
 ## Handle
 
