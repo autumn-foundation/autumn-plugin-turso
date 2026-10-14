@@ -105,3 +105,74 @@ Question: "How can we make this plugin fail?" Each answer gives a control.
 
 Diesel integration, session store, cache backend, at-rest encryption,
 partial sync.
+
+# Plan: example app (`examples/notes`)
+
+## Goal
+
+Give users one small, runnable app that shows how to use the plugin. Tests
+run the same code, so the example cannot become out of date.
+
+## 1. Brainstorming
+
+- ✓ A JSON notes API: create, list, get and delete notes.
+- ✓ `cargo run --example notes` with no config and no server.
+- ✓ Migrations as `const` data.
+- ✓ The `Turso` extractor in each handler.
+- ✓ Bound parameters (`?1`), not SQL text from user input.
+- ✓ `RETURNING` to get the new row in one statement.
+- ✓ Map "no row" to `404` and bad input to `422`.
+- ✓ Tests include the example source with `#[path]`.
+- An HTML front end. Not necessary: it hides the database part.
+- A sync example. Later: it needs a Turso Cloud account.
+- A second example for `connect()` and transactions. Later.
+
+## 2. Reverse brainstorming
+
+Question: "How can we make this example bad?" Each answer gives a control.
+
+| How to make it bad | Control |
+| --- | --- |
+| The example does not compile after an API change. | Tests compile and run the example code. Clippy checks `--all-targets`. |
+| The example shows SQL made from user text. | Use bound parameters. A test stores `'; DROP TABLE notes; --`. |
+| The example hides errors with `unwrap`. | Handlers return `AutumnResult`. No `unwrap` in the example. |
+| A missing note gives `500`. | Return `404`. A test checks it. |
+| An empty or very long note is stored. | Return `422`. A test checks it. |
+| The example writes into the source tree. | Default path is `data/notes.db`. `/data` is in `.gitignore`. |
+| Data is lost at restart. | A test writes, closes, starts again and reads. |
+| Text is long and hard to read. | Short comments in ASD-STE100. |
+
+## 3. Six thinking hats
+
+- **White (facts).** `TestApp` runs plugin startup hooks. `turso` 0.8.3
+  binds arrays and tuples as parameters. Autumn `Json` is an extractor and
+  a response. CSRF is off by default.
+- **Red (feelings).** Users copy example code. It must be correct and short.
+- **Black (risks).** Code that only `main.rs` uses is dead in the test
+  crate and fails `-D warnings`. Keep all shared items in `app.rs` and use
+  them in tests.
+- **Yellow (benefits).** One file shows the full flow. Tests prove it works.
+- **Green (ideas).** Tests set `:memory:` with the builder. The app uses a
+  file. One `plugin()` function serves both.
+- **Blue (process).** Red: tests that fail. Green: the smallest code that
+  passes. Refactor. Then a multi-angle review. Then map each criterion to
+  its evidence.
+
+## 4. Acceptance criteria
+
+- **EX1 — Runnable.** `cargo run --example notes` starts the app with no
+  config. It uses only the public API of this crate.
+- **EX2 — Plugin use.** The example adds `TursoPlugin` with `const`
+  migrations and gets the database with the `Turso` extractor.
+- **EX3 — API.** `POST /notes` gives `201` and the note. `GET /notes` gives
+  all notes in id order. `GET /notes/{id}` gives `200` or `404`.
+  `DELETE /notes/{id}` gives `204` or `404`.
+- **EX4 — Input checks.** An empty note or a note longer than 1000
+  characters gives `422`. SQL text in a note is stored as data.
+- **EX5 — Durability.** A note in a file database is there after a restart.
+- **EX6 — Health.** The example app shows the `turso` health component as
+  `UP`.
+- **EX7 — Tested in CI.** An integration test runs the example code. CI
+  builds the example in the lint, test and MSRV jobs.
+- **EX8 — Documentation.** The README shows how to run the example, with
+  `curl` calls. `CHANGELOG.md` records it. Text uses ASD-STE100.

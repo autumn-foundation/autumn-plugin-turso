@@ -28,4 +28,5 @@
 | `src/migrate.rs` | Migrations. |
 | `src/health.rs`, `src/metrics.rs` | Actuator wiring. |
 | `tests/` | Integration tests, one file per area. |
+| `examples/notes/` | Example app. `tests/example.rs` includes `app.rs`. |
 | `docs/plan.md` | Plan and acceptance criteria. |

@@ -52,6 +52,22 @@ the extractor returns `500`.
 An app has one Turso database. A second `TursoPlugin` is skipped with a
 warning.
 
+## Example
+
+[`examples/notes`](https://github.com/autumn-foundation/autumn-plugin-turso/tree/main/examples/notes) is a JSON notes API. It shows
+migrations, the `Turso` extractor, bound parameters and error codes.
+
+```sh
+cargo run --example notes    # Listens on port 3000. Writes data/notes.db.
+curl -X POST localhost:3000/notes -H 'content-type: application/json' -d '{"body":"buy milk"}'
+curl localhost:3000/notes      # [{"id":1,"body":"buy milk"}]
+curl localhost:3000/notes/1    # 200, or 404 when the note is missing.
+curl -X DELETE localhost:3000/notes/1   # 204, or 404.
+```
+
+An empty note, or a note longer than 1000 characters, gives `422`.
+`tests/example.rs` runs the same code.
+
 ## Handle
 
 | Call | Result |
