@@ -202,6 +202,8 @@ async fn ping_is_not_counted_as_a_statement() {
     let db = Turso::open(&memory()).await.expect("open");
     db.ping().await.expect("ping");
     assert_eq!(db.stats().statements, 0);
-    db.execute("CREATE TABLE t (x INTEGER)", ()).await.expect("execute");
+    db.execute("CREATE TABLE t (x INTEGER)", ())
+        .await
+        .expect("execute");
     assert_eq!(db.stats().statements, 1);
 }
