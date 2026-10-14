@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    name: Test (${{ matrix.os }}, ${{ matrix.features }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        features: ["", "sync,fts"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.features }}
+      - run: cargo test --features "${{ matrix.features }}"
+
+  sync-server:
+    name: Sync (local tursodb server)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache tursodb
+        id: tursodb
+        uses: actions/cache@v4
+        with:
+          path: ~/tursodb
+          key: tursodb-v0.8.3-${{ runner.os }}
+      - name: Install tursodb
+        if: steps.tursodb.outputs.cache-hit != 'true'
+        run: cargo install --git https://github.com/tursodatabase/turso --tag v0.8.3 turso_cli --locked --root ~/tursodb
+      - name: Run sync tests
+        run: |
+          export TURSODB_BIN="$HOME/tursodb/bin/tursodb"
+          out=$(cargo test --features sync -- --ignored --skip live_round_trip 2>&1 | tee /dev/stderr)
+          # A filter that matches nothing still passes. Count the passes.
+          passed=$(echo "$out" | grep -o '[0-9]* passed' | awk '{s+=$1} END {print s}')
+          test "$passed" -ge 5
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets --all-features
