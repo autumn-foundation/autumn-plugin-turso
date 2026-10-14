@@ -287,3 +287,73 @@ fn blank_or_control_token_is_rejected() {
         assert!(err.to_string().contains("auth_token"), "{token:?}: {err}");
     }
 }
+
+#[test]
+fn file_uri_path_is_rejected() {
+    let err = TursoConfig::new("file:app.db?mode=ro")
+        .validate()
+        .expect_err("uri");
+    assert!(err.to_string().contains("file:"), "{err}");
+}
+
+#[test]
+fn sync_enabled_false_turns_sync_off() {
+    let dir = dir_with(&[("autumn.toml", "[turso.sync]\nurl = \"https://x\"\n")]);
+    let sources = ConfigSources::new(dir.path(), "dev").env("AUTUMN_TURSO__SYNC__ENABLED", "false");
+    let config = TursoConfig::resolve(TursoConfig::default(), &sources).expect("resolve");
+    assert!(config.active_sync().is_none());
+    config.validate().expect("valid without sync");
+}
+
+#[test]
+fn inline_alias_and_canonical_profiles_apply_canonical_last() {
+    let dir = dir_with(&[(
+        "autumn.toml",
+        r#"
+[profile.production.turso]
+path = "alias.db"
+busy_timeout_ms = 1
+
+[profile.prod.turso]
+path = "canonical.db"
+"#,
+    )]);
+    let config = TursoConfig::resolve(
+        TursoConfig::default(),
+        &ConfigSources::new(dir.path(), "prod"),
+    )
+    .expect("resolve");
+    assert_eq!(config.path, "canonical.db");
+    assert_eq!(config.busy_timeout_ms, 1, "alias still applies");
+}
+
+#[test]
+fn development_alias_section_applies_to_dev() {
+    let dir = dir_with(&[(
+        "autumn.toml",
+        "[profile.development.turso]\npath = \"dev-alias.db\"\n",
+    )]);
+    let config = TursoConfig::resolve(
+        TursoConfig::default(),
+        &ConfigSources::new(dir.path(), "dev"),
+    )
+    .expect("resolve");
+    assert_eq!(config.path, "dev-alias.db");
+}
+
+#[test]
+fn only_the_first_profile_file_is_read() {
+    let dir = dir_with(&[
+        ("autumn-prod.toml", "[turso]\npath = \"prod.db\"\n"),
+        (
+            "autumn-production.toml",
+            "[turso]\npath = \"production.db\"\n",
+        ),
+    ]);
+    let config = TursoConfig::resolve(
+        TursoConfig::default(),
+        &ConfigSources::new(dir.path(), "prod"),
+    )
+    .expect("resolve");
+    assert_eq!(config.path, "prod.db");
+}

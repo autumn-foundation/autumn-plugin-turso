@@ -38,7 +38,7 @@ Question: "How can we make this plugin fail?" Each answer gives a control.
 | Two migrations use one id. | Fail startup and name the id. |
 | A migration fails halfway. | Run each migration in one transaction. |
 | A read-only database has pending migrations. | Fail startup with a clear message. |
-| A handler runs before startup or after shutdown. | Return `TursoError::Closed`. The extractor returns 500 with a message. |
+| A handler runs before startup or after shutdown. | Return `TursoError::Closed`. The extractor returns 500. |
 | Health says `UP` when the database is closed. | Health runs `SELECT 1` and reports `DOWN` on error or close. |
 | Shutdown loses local writes that are not pushed. | Push at shutdown when sync is on (default). |
 | A sync failure at runtime stops the app. | The loop logs the error, counts it, and continues. |

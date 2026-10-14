@@ -57,6 +57,10 @@ pub enum TursoError {
     #[error("turso database is read-only and these migrations are pending: {}", .0.join(", "))]
     ReadOnlyPending(Vec<String>),
 
+    /// The plugin started a second time in one app.
+    #[error("turso plugin is already started")]
+    AlreadyStarted,
+
     /// The handle is closed.
     #[error("turso database is closed")]
     Closed,

@@ -174,6 +174,9 @@ impl Start {
             self.slot.set(SlotState::Disabled);
             return Ok(());
         }
+        if self.running.is_started() {
+            return Err(TursoError::AlreadyStarted);
+        }
         let handle = Turso::open(&config).await?;
         if config.migrate_on_start {
             handle.migrate(&self.migrations).await?;
@@ -186,7 +189,7 @@ impl Start {
                 );
             }
         }
-        self.running.start(&handle, config.sync.as_ref());
+        self.running.start(&handle, config.active_sync())?;
         state.insert_extension(handle.clone());
         self.slot.set(SlotState::Open(handle));
         tracing::info!(path = %config.path, "turso database open");
@@ -205,14 +208,27 @@ struct RunningState {
 }
 
 impl Running {
+    fn is_started(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
+    }
+
+    /// Record the open handle and start the sync loop. A second start is an
+    /// error.
     #[cfg_attr(not(feature = "sync"), allow(unused_variables))]
-    fn start(&self, handle: &Turso, sync: Option<&SyncConfig>) {
-        let state = RunningState {
+    fn start(&self, handle: &Turso, sync: Option<&SyncConfig>) -> Result<(), TursoError> {
+        let mut slot = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if slot.is_some() {
+            return Err(TursoError::AlreadyStarted);
+        }
+        *slot = Some(RunningState {
             handle: handle.clone(),
             #[cfg(feature = "sync")]
             sync: sync.map(|sync| SyncTask::start(handle, sync)),
-        };
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(state);
+        });
+        Ok(())
     }
 
     async fn stop(&self) {
@@ -254,22 +270,40 @@ impl SyncTask {
         task
     }
 
+    /// Stop the loop, then push once. Each step has a time limit, so the
+    /// caller can always close the handle.
     async fn stop(self, handle: &Turso) {
         if let Some(stop) = self.stop {
             let _ = stop.send(true);
         }
-        if let Some(task) = self.task {
-            let _ = task.await;
-        }
-        if self.push_on_shutdown
-            && let Err(err) = handle.push().await
+        if let Some(mut task) = self.task
+            && tokio::time::timeout(STOP_LOOP_TIMEOUT, &mut task)
+                .await
+                .is_err()
         {
-            tracing::error!(%err, "turso push at shutdown failed");
+            task.abort();
+        }
+        if !self.push_on_shutdown {
+            return;
+        }
+        match tokio::time::timeout(SHUTDOWN_PUSH_TIMEOUT, handle.push()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::error!(%err, "turso push at shutdown failed"),
+            Err(_) => tracing::error!("turso push at shutdown took too long; local data is kept"),
         }
     }
 }
 
-/// Push and pull every `every`. Log errors and continue.
+/// How long shutdown waits for the sync loop to stop.
+#[cfg(feature = "sync")]
+const STOP_LOOP_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long shutdown waits for the final push.
+#[cfg(feature = "sync")]
+const SHUTDOWN_PUSH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Push and pull every `every`. Log errors and continue. A stop signal
+/// also stops a push or pull in progress.
 #[cfg(feature = "sync")]
 async fn sync_loop(handle: Turso, every: Duration, mut stop: tokio::sync::watch::Receiver<bool>) {
     let mut ticker = tokio::time::interval(every);
@@ -280,12 +314,46 @@ async fn sync_loop(handle: Turso, every: Duration, mut stop: tokio::sync::watch:
             _ = ticker.tick() => {}
             _ = stop.changed() => break,
         }
-        if let Err(err) = handle.push().await {
-            tracing::warn!(%err, "turso sync push failed");
+        let round = async {
+            if let Err(err) = handle.push().await {
+                tracing::warn!(%err, "turso sync push failed");
+            }
+            if let Err(err) = handle.pull().await {
+                tracing::warn!(%err, "turso sync pull failed");
+            }
+        };
+        tokio::select! {
+            () = round => {}
+            _ = stop.changed() => break,
         }
-        if let Err(err) = handle.pull().await {
-            tracing::warn!(%err, "turso sync pull failed");
-        }
+    }
+}
+
+#[cfg(test)]
+mod local_tests {
+    use super::*;
+
+    async fn memory() -> Turso {
+        Turso::open(&TursoConfig::new(":memory:"))
+            .await
+            .expect("open")
+    }
+
+    #[tokio::test]
+    async fn stop_closes_a_local_handle() {
+        let handle = memory().await;
+        let running = Running::default();
+        running.start(&handle, None).expect("start");
+        running.stop().await;
+        assert!(handle.is_closed());
+    }
+
+    #[tokio::test]
+    async fn second_start_is_refused() {
+        let running = Running::default();
+        running.start(&memory().await, None).expect("first");
+        let err = running.start(&memory().await, None).expect_err("second");
+        assert!(matches!(err, TursoError::AlreadyStarted), "{err:?}");
     }
 }
 
@@ -321,8 +389,8 @@ mod tests {
             .await
             .expect("write");
         let running = Running::default();
-        running.start(&handle, config.sync.as_ref());
-        running.stop().await;
+        running.start(&handle, config.sync.as_ref()).expect("start");
+        stop_in_time(&running).await;
         assert!(handle.is_closed());
 
         let other_dir = tempfile::tempdir().expect("dir");
@@ -344,7 +412,7 @@ mod tests {
             .await
             .expect("write");
         let running = Running::default();
-        running.start(&handle, config.sync.as_ref());
+        running.start(&handle, config.sync.as_ref()).expect("start");
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         while handle.stats().sync_pushes == 0 || handle.stats().sync_pulls < 2 {
             assert!(
@@ -354,7 +422,56 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        running.stop().await;
+        stop_in_time(&running).await;
+        assert!(handle.is_closed());
+    }
+
+    async fn stop_in_time(running: &Running) {
+        tokio::time::timeout(Duration::from_secs(15), running.stop())
+            .await
+            .expect("stop must finish in time");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires tursodb (TURSODB_BIN)"]
+    async fn no_push_when_push_on_shutdown_is_off() {
+        let server = sync_server::SyncServer::start();
+        let dir = tempfile::tempdir().expect("dir");
+        let mut config = synced(&dir, server.url(), 0);
+        if let Some(sync) = config.sync.as_mut() {
+            sync.push_on_shutdown = false;
+        }
+        let handle = Turso::open(&config).await.expect("open");
+        handle
+            .execute_batch("CREATE TABLE notes (body TEXT); INSERT INTO notes VALUES ('x');")
+            .await
+            .expect("write");
+        let running = Running::default();
+        running.start(&handle, config.sync.as_ref()).expect("start");
+        stop_in_time(&running).await;
+        assert_eq!(handle.stats().sync_pushes, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires tursodb (TURSODB_BIN)"]
+    async fn loop_counts_errors_and_continues_when_the_server_goes_away() {
+        let server = sync_server::SyncServer::start();
+        let dir = tempfile::tempdir().expect("dir");
+        let config = synced(&dir, server.url(), 1);
+        let handle = Turso::open(&config).await.expect("open");
+        let running = Running::default();
+        running.start(&handle, config.sync.as_ref()).expect("start");
+        drop(server);
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while handle.stats().sync_errors < 2 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no sync errors counted: {:?}",
+                handle.stats()
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        stop_in_time(&running).await;
         assert!(handle.is_closed());
     }
 

@@ -66,3 +66,18 @@ fn down(reason: &str, mut details: HashMap<String, Value>) -> HealthCheckOutput 
     details.insert("error".to_owned(), json!(reason));
     HealthCheckOutput::down().with_details(details)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use autumn_web::actuator::HealthStatus;
+
+    #[tokio::test]
+    async fn pending_slot_is_down() {
+        let output = TursoHealthIndicator::from_slot(Slot::default())
+            .check()
+            .await;
+        assert_eq!(output.status, HealthStatus::Down);
+        assert_eq!(output.details["error"], "not started");
+    }
+}

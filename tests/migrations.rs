@@ -45,11 +45,9 @@ async fn new_migrations_apply_later() {
         ["0002_index_notes"]
     );
     assert_eq!(db.migrate(&[CREATE, INDEX]).await.expect("second"), 1);
-    assert!(
-        db.pending(&[CREATE, INDEX])
-            .await
-            .expect("pending")
-            .is_empty()
+    assert_eq!(
+        db.pending(&[CREATE, INDEX]).await.expect("pending"),
+        Vec::<String>::new()
     );
 }
 
@@ -69,7 +67,7 @@ async fn failed_migration_rolls_back() {
         db.query("SELECT * FROM half", ()).await.is_err(),
         "table rolled back"
     );
-    assert!(applied_ids(&db).await.is_empty());
+    assert_eq!(applied_ids(&db).await, Vec::<String>::new());
 }
 
 #[tokio::test]
@@ -106,6 +104,69 @@ async fn empty_id_is_rejected() {
         .await
         .expect_err("empty id");
     assert!(matches!(err, TursoError::InvalidMigration), "{err:?}");
+}
+
+#[test]
+fn checksum_is_pinned() {
+    // A new algorithm would fail startup on every deployed database.
+    let migration = Migration::new("a", "CREATE TABLE notes (body TEXT);");
+    assert_eq!(migration.checksum(), "0354e0287578986f");
+}
+
+#[test]
+fn checksum_ignores_line_endings() {
+    let lf = Migration::new("a", "CREATE TABLE a (x);\nCREATE TABLE b (x);\n");
+    let crlf = Migration::new("a", "CREATE TABLE a (x);\r\nCREATE TABLE b (x);\r\n");
+    assert_eq!(lf.checksum(), crlf.checksum());
+}
+
+#[test]
+fn owned_equals_static() {
+    assert_eq!(Migration::owned("0001_create_notes", CREATE.sql()), CREATE);
+}
+
+#[tokio::test]
+async fn earlier_migrations_stay_applied_when_a_later_one_fails() {
+    let db = memory().await;
+    let bad = Migration::new("0002_bad", "INSERT INTO missing VALUES (1);");
+    assert!(db.migrate(&[CREATE, bad]).await.is_err());
+    assert_eq!(applied_ids(&db).await, ["0001_create_notes"]);
+}
+
+#[tokio::test]
+async fn migration_that_ends_the_transaction_fails() {
+    let db = memory().await;
+    let sneaky = Migration::new("0001_sneaky", "CREATE TABLE t2 (x); COMMIT;");
+    let err = db.migrate(&[sneaky]).await.expect_err("must fail");
+    match &err {
+        TursoError::Migration { id, message } => {
+            assert_eq!(id, "0001_sneaky");
+            assert!(message.contains("BEGIN, COMMIT or ROLLBACK"), "{message}");
+        }
+        other => panic!("wrong error: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_migrations_on_one_file_both_succeed() {
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("race.db").to_string_lossy().into_owned();
+    let a = Turso::open(&TursoConfig::new(path.clone()))
+        .await
+        .expect("a");
+    let b = Turso::open(&TursoConfig::new(path)).await.expect("b");
+    let ta = tokio::spawn({
+        let a = a.clone();
+        async move { a.migrate(&[CREATE, INDEX]).await }
+    });
+    let tb = tokio::spawn(async move { b.migrate(&[CREATE, INDEX]).await });
+    let (ra, rb) = (ta.await.expect("join a"), tb.await.expect("join b"));
+    let total = ra.expect("a migrates") + rb.expect("b migrates");
+    assert_eq!(total, 2, "each migration runs once");
+    assert_eq!(
+        applied_ids(&a).await,
+        ["0001_create_notes", "0002_index_notes"]
+    );
 }
 
 #[test]

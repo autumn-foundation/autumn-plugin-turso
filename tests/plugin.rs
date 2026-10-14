@@ -1,6 +1,6 @@
 //! AC1, AC3, AC5, AC7, AC8: the plugin inside an Autumn app.
 
-use autumn_plugin_turso::{ConfigSources, Migration, Turso, TursoPlugin};
+use autumn_plugin_turso::{ConfigSources, Migration, SyncConfig, Turso, TursoError, TursoPlugin};
 use autumn_web::plugin::Plugin;
 use autumn_web::prelude::*;
 use autumn_web::test::TestApp;
@@ -113,19 +113,27 @@ async fn metrics_are_exported() {
         .routes(routes![add_note])
         .build();
     client.get("/notes/add").send().await.assert_ok();
+    // A health probe must not change the statement count.
+    client.get("/actuator/health").send().await;
     let text = client.get("/actuator/prometheus").send().await.text();
-    for family in [
+    let lines: Vec<&str> = text.lines().collect();
+    for sample in [
         "turso_up 1",
-        "turso_statements_total",
-        "turso_errors_total",
-        "turso_connections_opened_total",
+        "turso_statements_total 1",
+        "turso_errors_total 0",
         "turso_migrations_applied_total 1",
-        "turso_sync_pushes_total",
-        "turso_sync_pulls_total",
-        "turso_sync_errors_total",
+        "turso_sync_pushes_total 0",
+        "turso_sync_pulls_total 0",
+        "turso_sync_errors_total 0",
     ] {
-        assert!(text.contains(family), "missing {family} in:\n{text}");
+        assert!(lines.contains(&sample), "missing `{sample}` in:\n{text}");
     }
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("turso_connections_opened_total ")),
+        "{text}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -179,6 +187,76 @@ fn migrate_on_start_false_leaves_schema_alone() {
             .plugin(memory_plugin(&dir).migrate_on_start(false))
             .build();
         let db = client.state().extension::<Turso>().expect("handle");
-        assert!(db.query("SELECT * FROM notes", ()).await.is_err());
+        assert_eq!(db.pending(&[NOTES]).await.expect("pending"), ["0001_notes"]);
+        let err = db
+            .query("SELECT * FROM notes", ())
+            .await
+            .expect_err("no table");
+        assert!(matches!(err, TursoError::Database(_)), "{err:?}");
     });
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn extractor_after_close_is_a_500() {
+    let dir = tempfile::tempdir().expect("dir");
+    let client = TestApp::new()
+        .plugin(memory_plugin(&dir))
+        .routes(routes![count_notes])
+        .build();
+    client
+        .state()
+        .extension::<Turso>()
+        .expect("handle")
+        .close()
+        .await;
+    client.get("/notes/count").send().await.assert_status(500);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn extractor_when_disabled_is_a_500_and_metrics_show_down() {
+    let dir = tempfile::tempdir().expect("dir");
+    let client = TestApp::new()
+        .plugin(memory_plugin(&dir).enabled(false))
+        .routes(routes![count_notes])
+        .build();
+    client.get("/notes/count").send().await.assert_status(500);
+    let text = client.get("/actuator/prometheus").send().await.text();
+    assert!(text.lines().any(|line| line == "turso_up 0"), "{text}");
+}
+
+#[test]
+fn read_only_with_pending_migrations_fails_startup() {
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("ro.db");
+    let rt = tokio::runtime::Runtime::new().expect("rt");
+    rt.block_on(async {
+        let db = Turso::open(&autumn_plugin_turso::TursoConfig::new(
+            path.to_string_lossy(),
+        ))
+        .await
+        .expect("create file");
+        db.close().await;
+    });
+    let plugin = TursoPlugin::new()
+        .path(path.to_string_lossy())
+        .read_only(true)
+        .config_sources(isolated(&dir))
+        .migration(NOTES);
+    let result = std::panic::catch_unwind(|| {
+        rt.block_on(async { TestApp::new().plugin(plugin).build() });
+    });
+    let payload = result.expect_err("startup must fail");
+    let message = payload
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_default();
+    assert!(message.contains("0001_notes"), "{message}");
+}
+
+#[test]
+fn plugin_debug_hides_the_token() {
+    let plugin = TursoPlugin::new()
+        .sync(SyncConfig::new("libsql://db.example.turso.io").auth_token("plugin-secret"));
+    let text = format!("{plugin:?}");
+    assert!(!text.contains("plugin-secret"), "{text}");
 }

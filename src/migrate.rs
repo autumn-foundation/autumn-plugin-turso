@@ -59,11 +59,13 @@ impl Migration {
     }
 
     /// A stable 64-bit FNV-1a checksum of the SQL, as 16 hex digits.
+    /// The checksum reads `\r\n` as `\n`, so line endings do not change it.
     #[must_use]
     pub fn checksum(&self) -> String {
         const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
         const PRIME: u64 = 0x0100_0000_01b3;
-        let hash = self.sql.bytes().fold(OFFSET, |hash, byte| {
+        let normalized = self.sql.replace("\r\n", "\n");
+        let hash = normalized.bytes().fold(OFFSET, |hash, byte| {
             (hash ^ u64::from(byte)).wrapping_mul(PRIME)
         });
         format!("{hash:016x}")

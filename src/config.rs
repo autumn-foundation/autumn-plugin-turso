@@ -67,6 +67,9 @@ impl Default for TursoConfig {
 #[derive(Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SyncConfig {
+    /// Use sync. Set `false` to turn off a `[turso.sync]` table from a lower
+    /// layer. Default: `true`.
+    pub enabled: bool,
     /// The remote database URL (`libsql://`, `turso://`, `https://` or
     /// `http://`).
     pub url: Option<String>,
@@ -83,6 +86,7 @@ pub struct SyncConfig {
 impl Default for SyncConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             url: None,
             auth_token: None,
             pull_on_start: true,
@@ -95,6 +99,7 @@ impl Default for SyncConfig {
 impl fmt::Debug for SyncConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SyncConfig")
+            .field("enabled", &self.enabled)
             .field("url", &self.url)
             .field(
                 "auth_token",
@@ -204,7 +209,12 @@ impl TursoConfig {
         if self.path.trim().is_empty() {
             return Err(TursoError::Config("`turso.path` must not be empty".into()));
         }
-        let Some(sync) = &self.sync else {
+        if self.path.trim().starts_with("file:") {
+            return Err(TursoError::Config(
+                "`turso.path` must be a file path, not a `file:` URI".into(),
+            ));
+        }
+        let Some(sync) = self.active_sync() else {
             return Ok(());
         };
         let url = sync.url.as_deref().map(str::trim).unwrap_or_default();
@@ -242,6 +252,12 @@ impl TursoConfig {
         } else {
             Err(TursoError::SyncFeatureDisabled)
         }
+    }
+
+    /// The sync config when it is set and enabled.
+    #[must_use]
+    pub fn active_sync(&self) -> Option<&SyncConfig> {
+        self.sync.as_ref().filter(|sync| sync.enabled)
     }
 
     fn apply(&mut self, patch: Patch) {
@@ -288,6 +304,7 @@ impl TursoConfig {
         };
         let sync = self.sync.get_or_insert_with(SyncConfig::default);
         match field {
+            "ENABLED" => sync.enabled = parse_env(key, value)?,
             "URL" => sync.url = Some(value.to_owned()),
             "AUTH_TOKEN" => sync.auth_token = Some(value.to_owned()),
             "PULL_ON_START" => sync.pull_on_start = parse_env(key, value)?,
@@ -327,12 +344,14 @@ impl SyncConfig {
 
     fn apply(&mut self, patch: SyncPatch) {
         let SyncPatch {
+            enabled,
             url,
             auth_token,
             pull_on_start,
             push_on_shutdown,
             interval_secs,
         } = patch;
+        set(&mut self.enabled, enabled);
         if url.is_some() {
             self.url = url;
         }
@@ -367,24 +386,64 @@ impl ConfigSources {
         }
     }
 
-    /// Read config files from `AUTUMN_MANIFEST_DIR`, then from the current
-    /// directory. Read all `AUTUMN_TURSO__*` variables.
+    /// Read the process like Autumn core does.
+    ///
+    /// - Read config files from `AUTUMN_MANIFEST_DIR`, then from the current
+    ///   directory.
+    /// - Read `AUTUMN_TURSO__*` from the environment and from `.env` files.
+    ///   The environment wins.
+    /// - Read the profile name from `AUTUMN_ENV`, `AUTUMN_PROFILE` or
+    ///   `--profile`.
     #[must_use]
     pub fn from_process(profile: &str) -> Self {
+        let os: Vec<(String, String)> = std::env::vars().collect();
+        let base = autumn_web::config::OsEnv;
+        let dir = os
+            .iter()
+            .find(|(key, _)| key == "AUTUMN_MANIFEST_DIR")
+            .map_or_else(
+                || std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                |(_, dir)| PathBuf::from(dir),
+            );
+        let dotenv = autumn_web::dotenv::resolve_dotenv_vars_in(&dir, profile, &base)
+            .unwrap_or_else(|err| {
+                tracing::warn!(%err, "turso plugin cannot read .env; it uses the environment only");
+                Vec::new()
+            });
+        let args: Vec<String> = std::env::args().collect();
+        Self::from_vars(profile, os, dotenv, &args)
+    }
+
+    /// The pure part of [`from_process`](Self::from_process).
+    pub(crate) fn from_vars(
+        profile: &str,
+        os: Vec<(String, String)>,
+        dotenv: Vec<(String, String)>,
+        args: &[String],
+    ) -> Self {
+        let lookup = |key: &str| {
+            os.iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        };
         let mut dirs = Vec::new();
-        if let Some(dir) = std::env::var_os("AUTUMN_MANIFEST_DIR") {
+        if let Some(dir) = lookup("AUTUMN_MANIFEST_DIR") {
             dirs.push(PathBuf::from(dir));
         }
         dirs.push(PathBuf::from("."));
-        let profile_input = ["AUTUMN_ENV", "AUTUMN_PROFILE"]
-            .iter()
-            .filter_map(|key| std::env::var(key).ok())
-            .map(|value| value.trim().to_owned())
-            .find(|value| !value.is_empty())
+        let profile_input = lookup("AUTUMN_ENV")
+            .or_else(|| lookup("AUTUMN_PROFILE"))
+            .or_else(|| profile_flag(args))
             .unwrap_or_else(|| profile.to_owned());
-        let env = std::env::vars()
+        let mut env: BTreeMap<String, String> = dotenv
+            .into_iter()
             .filter(|(key, _)| key.starts_with(ENV_PREFIX))
             .collect();
+        env.extend(
+            os.into_iter()
+                .filter(|(key, _)| key.starts_with(ENV_PREFIX)),
+        );
         Self {
             dirs,
             profile: profile.to_owned(),
@@ -451,11 +510,25 @@ struct Patch {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SyncPatch {
+    enabled: Option<bool>,
     url: Option<String>,
     auth_token: Option<String>,
     pull_on_start: Option<bool>,
     push_on_shutdown: Option<bool>,
     interval_secs: Option<u64>,
+}
+
+/// The value of `--profile <name>` or `--profile=<name>`, as Autumn core
+/// reads it.
+fn profile_flag(args: &[String]) -> Option<String> {
+    args.iter().enumerate().find_map(|(i, arg)| {
+        let value = if arg == "--profile" {
+            args.get(i + 1)?.as_str()
+        } else {
+            arg.strip_prefix("--profile=")?
+        };
+        Some(value.trim().to_owned()).filter(|value| !value.is_empty())
+    })
 }
 
 /// `true` when an `http://` URL names a loopback host.
@@ -527,5 +600,79 @@ impl EnvValue for u64 {
     const EXPECTED: &'static str = "a whole number";
     fn parse(value: &str) -> Option<Self> {
         value.parse().ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn manifest_dir_comes_before_cwd() {
+        let sources = ConfigSources::from_vars(
+            "dev",
+            vars(&[("AUTUMN_MANIFEST_DIR", "/app")]),
+            Vec::new(),
+            &[],
+        );
+        assert_eq!(sources.dirs, [PathBuf::from("/app"), PathBuf::from(".")]);
+    }
+
+    #[test]
+    fn only_turso_vars_are_kept_and_os_beats_dotenv() {
+        let sources = ConfigSources::from_vars(
+            "dev",
+            vars(&[("AUTUMN_TURSO__PATH", "os.db"), ("HOME", "/root")]),
+            vars(&[
+                ("AUTUMN_TURSO__PATH", "dotenv.db"),
+                ("AUTUMN_TURSO__READ_ONLY", "true"),
+            ]),
+            &[],
+        );
+        assert_eq!(
+            sources.env.get("AUTUMN_TURSO__PATH").map(String::as_str),
+            Some("os.db")
+        );
+        assert_eq!(
+            sources
+                .env
+                .get("AUTUMN_TURSO__READ_ONLY")
+                .map(String::as_str),
+            Some("true")
+        );
+        assert!(!sources.env.contains_key("HOME"));
+    }
+
+    #[test]
+    fn profile_input_follows_core_precedence() {
+        let args = [
+            "app".to_owned(),
+            "--profile".to_owned(),
+            "production".to_owned(),
+        ];
+        let from_flag = ConfigSources::from_vars("prod", Vec::new(), Vec::new(), &args);
+        assert_eq!(from_flag.profile_input, "production");
+
+        let eq_args = ["app".to_owned(), "--profile=staging".to_owned()];
+        let from_eq = ConfigSources::from_vars("staging", Vec::new(), Vec::new(), &eq_args);
+        assert_eq!(from_eq.profile_input, "staging");
+
+        let from_env = ConfigSources::from_vars(
+            "prod",
+            vars(&[("AUTUMN_PROFILE", "prod"), ("AUTUMN_ENV", " production ")]),
+            Vec::new(),
+            &args,
+        );
+        assert_eq!(from_env.profile_input, "production");
+
+        let fallback = ConfigSources::from_vars("dev", Vec::new(), Vec::new(), &[]);
+        assert_eq!(fallback.profile_input, "dev");
     }
 }

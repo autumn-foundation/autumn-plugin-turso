@@ -207,3 +207,60 @@ async fn ping_is_not_counted_as_a_statement() {
         .expect("execute");
     assert_eq!(db.stats().statements, 1);
 }
+
+#[tokio::test]
+async fn read_only_open_of_missing_file_makes_no_dir() {
+    let dir = tempfile::tempdir().expect("dir");
+    let missing = dir.path().join("ro/app.db");
+    let config = TursoConfig::new(missing.to_string_lossy()).read_only(true);
+    let err = Turso::open(&config).await.expect_err("missing");
+    assert!(matches!(err, TursoError::Open { .. }), "{err:?}");
+    assert!(
+        !dir.path().join("ro").exists(),
+        "no directory for read-only"
+    );
+}
+
+#[tokio::test]
+async fn path_under_a_regular_file_is_an_open_error() {
+    let dir = tempfile::tempdir().expect("dir");
+    let file = dir.path().join("plain");
+    std::fs::write(&file, b"x").expect("write");
+    let config = TursoConfig::new(file.join("app.db").to_string_lossy());
+    let err = Turso::open(&config).await.expect_err("not a dir");
+    assert!(matches!(err, TursoError::Open { .. }), "{err:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn busy_timeout_bounds_the_lock_wait() {
+    let dir = tempfile::tempdir().expect("dir");
+    let config = TursoConfig::new(dir.path().join("busy.db").to_string_lossy())
+        .busy_timeout(std::time::Duration::from_millis(300));
+    let db = Turso::open(&config).await.expect("open");
+    db.execute_batch("CREATE TABLE t (x INTEGER);")
+        .await
+        .expect("create");
+    let holder = db.connect().await.expect("holder");
+    holder.execute("BEGIN IMMEDIATE", ()).await.expect("lock");
+    holder
+        .execute("INSERT INTO t VALUES (1)", ())
+        .await
+        .expect("insert");
+
+    let started = std::time::Instant::now();
+    let err = db
+        .execute("INSERT INTO t VALUES (2)", ())
+        .await
+        .expect_err("locked");
+    let waited = started.elapsed();
+    assert!(matches!(err, TursoError::Database(_)), "{err:?}");
+    assert!(
+        waited >= std::time::Duration::from_millis(250),
+        "waited {waited:?}"
+    );
+    assert!(
+        waited < std::time::Duration::from_secs(5),
+        "waited {waited:?}"
+    );
+    holder.execute("ROLLBACK", ()).await.expect("unlock");
+}

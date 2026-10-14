@@ -23,3 +23,12 @@ async fn health_details_show_no_secrets() {
     keys.sort();
     assert_eq!(keys, ["mode", "path", "read_only"]);
 }
+
+#[test]
+fn config_sources_debug_hides_env_values() {
+    let sources = autumn_plugin_turso::ConfigSources::new(".", "dev")
+        .env("AUTUMN_TURSO__SYNC__AUTH_TOKEN", TOKEN);
+    let text = format!("{sources:?}");
+    assert!(!text.contains(TOKEN), "{text}");
+    assert!(text.contains("AUTUMN_TURSO__SYNC__AUTH_TOKEN"), "{text}");
+}

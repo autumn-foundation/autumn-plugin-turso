@@ -67,8 +67,8 @@ warning.
 | `close()` | Closes the handle and all its clones. |
 
 All calls return `Result<_, TursoError>`. After `close`, calls return
-`TursoError::Closed`. A connection from `connect()` stays open until you drop
-it. The crate re-exports `turso`, so you can use
+`TursoError::Closed`. Close does not stop work that started before it. A
+connection from `connect()` stays open until you drop it. The crate re-exports `turso`, so you can use
 `autumn_plugin_turso::turso::Value`.
 
 ## Configuration
@@ -76,12 +76,13 @@ it. The crate re-exports `turso`, so you can use
 ```toml
 [turso]
 enabled = true            # Open the database at startup.
-path = "data/turso.db"    # ":memory:" gives an in-memory database.
+path = "data/turso.db"    # A file path. ":memory:" gives an in-memory database.
 read_only = false
 busy_timeout_ms = 5000    # Lock wait time.
 migrate_on_start = true   # When false, the plugin only logs pending ids.
 
 [turso.sync]              # Needs the `sync` feature.
+enabled = true            # Set false to turn off sync from a higher layer.
 url = "libsql://my-db.turso.io"
 auth_token = "..."        # Prefer AUTUMN_TURSO__SYNC__AUTH_TOKEN.
 pull_on_start = true
@@ -98,9 +99,15 @@ Layers (lowest first):
 5. `[turso]` in `autumn-<p>.toml`.
 6. Environment variables: `AUTUMN_TURSO__PATH`,
    `AUTUMN_TURSO__SYNC__AUTH_TOKEN`, and so on. Use `__` between levels.
+   The plugin also reads them from `.env` files, with the same rules as
+   Autumn core. A real environment variable wins.
+
+The plugin finds the profile as Autumn core does: `AUTUMN_ENV`, then
+`AUTUMN_PROFILE`, then `--profile`.
 
 An unknown key, an unknown `AUTUMN_TURSO__*` variable or a bad value stops
-startup. The message names the key.
+startup. The message names the key. A `file:` URI as `path` also stops
+startup.
 
 These sync settings also stop startup:
 
@@ -123,7 +130,13 @@ const MIGRATIONS: [Migration; 2] = [
 
 - Migrations run in the order you add them.
 - Each migration runs in one transaction. The plugin rolls back a failed
-  migration.
+  migration. Earlier migrations stay applied.
+- Do not use `BEGIN`, `COMMIT` or `ROLLBACK` in a migration. A migration that
+  ends the transaction fails.
+- Two processes can migrate one file at the same time. Each migration runs
+  once.
+- The checksum reads `\r\n` as `\n`. A checkout with other line endings does
+  not change it.
 - The table `_autumn_turso_migrations` records each id and checksum.
 - Do not edit an applied migration. A changed checksum stops startup.
   Add a new migration.
@@ -147,6 +160,11 @@ const MIGRATIONS: [Migration; 2] = [
 
 The plugin stops the sync loop, pushes (when `push_on_shutdown` is set) and
 closes the handle.
+
+The push is best-effort. It has a 10-second limit. Autumn also gives each
+shutdown hook a time limit (`server.shutdown_timeout_secs`, 1 second in the
+`dev` profile). When the push does not complete, the data stays in the local
+file. The next push or start sends it.
 
 ## Features
 

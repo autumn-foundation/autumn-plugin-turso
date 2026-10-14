@@ -93,8 +93,10 @@ impl Turso {
     pub async fn open(config: &TursoConfig) -> Result<Self> {
         config.validate()?;
         let path = config.path.trim().to_owned();
-        make_parent_dir(&path)?;
-        let synced = config.sync.is_some();
+        if !config.read_only {
+            make_parent_dir(&path)?;
+        }
+        let synced = config.active_sync().is_some();
         let backend = open_backend(config, &path).await?;
         let handle = Self {
             inner: Arc::new(Inner {
@@ -108,7 +110,7 @@ impl Turso {
             }),
         };
         #[cfg(feature = "sync")]
-        if config.sync.as_ref().is_some_and(|sync| sync.pull_on_start) {
+        if config.active_sync().is_some_and(|sync| sync.pull_on_start) {
             handle.pull().await?;
         }
         Ok(handle)
@@ -214,8 +216,11 @@ impl Turso {
     }
 
     /// Close the handle and all its clones. Later calls return
-    /// [`TursoError::Closed`]. A second close does nothing. A connection
-    /// from [`connect`](Self::connect) stays open until you drop it.
+    /// [`TursoError::Closed`]. A second close does nothing.
+    ///
+    /// Close does not stop work that started before it. A helper call in
+    /// progress completes. A connection from [`connect`](Self::connect)
+    /// stays open until you drop it.
     pub async fn close(&self) {
         self.inner.closed.store(true, Ordering::SeqCst);
         self.inner.backend.write().await.take();
@@ -365,15 +370,18 @@ impl Turso {
             ));
         }
         conn.execute(migrate::create_table_sql(), ()).await?;
+        let mut applied = 0;
         for migration in &pending {
-            apply_one(&conn, migration).await?;
-            self.inner
-                .counters
-                .migrations
-                .fetch_add(1, Ordering::Relaxed);
-            tracing::info!(id = migration.id(), "turso migration applied");
+            if apply_one(&conn, migration).await? {
+                applied += 1;
+                self.inner
+                    .counters
+                    .migrations
+                    .fetch_add(1, Ordering::Relaxed);
+                tracing::info!(id = migration.id(), "turso migration applied");
+            }
         }
-        Ok(pending.len())
+        Ok(applied)
     }
 
     fn count<T>(&self, result: Result<T>) -> Result<T> {
@@ -386,7 +394,7 @@ impl Turso {
 
 async fn open_backend(config: &TursoConfig, path: &str) -> Result<Backend> {
     #[cfg(feature = "sync")]
-    if let Some(sync) = &config.sync {
+    if let Some(sync) = config.active_sync() {
         let mut builder = turso::sync::Builder::new_remote(path)
             .with_remote_url(sync.url.clone().unwrap_or_default())
             .with_client_name(concat!("autumn-plugin-turso/", env!("CARGO_PKG_VERSION")));
@@ -411,8 +419,7 @@ async fn open_backend(config: &TursoConfig, path: &str) -> Result<Backend> {
 }
 
 fn make_parent_dir(path: &str) -> Result<()> {
-    // Turso parses `file:` URIs itself (`turso_core::OpenOptions::parse`).
-    if path == ":memory:" || path.starts_with("file:") {
+    if path == ":memory:" {
         return Ok(());
     }
     match std::path::Path::new(path).parent() {
@@ -449,43 +456,90 @@ async fn applied_checksums(conn: &Connection) -> Result<HashMap<String, String>>
     Ok(applied)
 }
 
-async fn apply_one(conn: &Connection, migration: &Migration) -> Result<()> {
-    let fail = |err: turso::Error| TursoError::Migration {
+/// Apply one migration in one transaction. Return `false` when another
+/// process applied it first.
+async fn apply_one(conn: &Connection, migration: &Migration) -> Result<bool> {
+    let fail = |message: String| TursoError::Migration {
         id: migration.id().to_owned(),
-        message: err.to_string(),
+        message,
     };
-    conn.execute("BEGIN IMMEDIATE", ()).await.map_err(fail)?;
-    let body = async {
-        conn.execute_batch(migration.sql()).await?;
-        conn.execute(
-            format!(
-                "INSERT INTO {MIGRATIONS_TABLE} (id, checksum, applied_at) \
-                 VALUES (?1, ?2, CAST(strftime('%s', 'now') AS INTEGER))"
-            ),
-            (migration.id().to_owned(), migration.checksum()),
+    conn.execute("BEGIN IMMEDIATE", ())
+        .await
+        .map_err(|err| fail(err.to_string()))?;
+    let result = apply_in_transaction(conn, migration).await;
+    if result.is_err()
+        && !conn.is_autocommit().unwrap_or(true)
+        && let Err(rollback) = conn.execute("ROLLBACK", ()).await
+    {
+        tracing::warn!(id = migration.id(), %rollback, "turso migration rollback failed");
+    }
+    result
+}
+
+async fn apply_in_transaction(conn: &Connection, migration: &Migration) -> Result<bool> {
+    let fail = |message: String| TursoError::Migration {
+        id: migration.id().to_owned(),
+        message,
+    };
+    // Read again under the write lock. Another process can be first.
+    let mut rows = conn
+        .query(
+            format!("SELECT checksum FROM {MIGRATIONS_TABLE} WHERE id = ?1"),
+            [migration.id()],
         )
         .await?;
-        conn.execute("COMMIT", ()).await
-    };
-    if let Err(err) = body.await {
-        if let Err(rollback) = conn.execute("ROLLBACK", ()).await {
-            tracing::warn!(id = migration.id(), %rollback, "turso migration rollback failed");
+    if let Some(row) = rows.next().await? {
+        drop(rows);
+        let applied = row.get::<String>(0)?;
+        conn.execute("ROLLBACK", ()).await?;
+        if applied == migration.checksum() {
+            return Ok(false);
         }
-        return Err(fail(err));
+        return Err(TursoError::MigrationChecksum {
+            id: migration.id().to_owned(),
+            applied,
+            current: migration.checksum(),
+        });
     }
-    Ok(())
+    drop(rows);
+    conn.execute_batch(migration.sql())
+        .await
+        .map_err(|err| fail(err.to_string()))?;
+    if conn.is_autocommit()? {
+        return Err(fail(
+            "the migration ended the transaction; do not use BEGIN, COMMIT or ROLLBACK in a migration"
+                .into(),
+        ));
+    }
+    conn.execute(
+        format!(
+            "INSERT INTO {MIGRATIONS_TABLE} (id, checksum, applied_at) \
+             VALUES (?1, ?2, CAST(strftime('%s', 'now') AS INTEGER))"
+        ),
+        (migration.id().to_owned(), migration.checksum()),
+    )
+    .await
+    .map_err(|err| fail(err.to_string()))?;
+    conn.execute("COMMIT", ())
+        .await
+        .map_err(|err| fail(err.to_string()))?;
+    Ok(true)
 }
 
 impl axum::extract::FromRequestParts<autumn_web::AppState> for Turso {
     type Rejection = autumn_web::AutumnError;
 
-    async fn from_request_parts(
+    fn from_request_parts(
         _parts: &mut axum::http::request::Parts,
         state: &autumn_web::AppState,
-    ) -> Result<Self, Self::Rejection> {
-        state
-            .extension::<Self>()
-            .map(|handle| (*handle).clone())
-            .ok_or_else(|| autumn_web::AutumnError::internal_server_error(TursoError::NotInstalled))
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
+        std::future::ready(
+            state
+                .extension::<Self>()
+                .map(|handle| (*handle).clone())
+                .ok_or_else(|| {
+                    autumn_web::AutumnError::internal_server_error(TursoError::NotInstalled)
+                }),
+        )
     }
 }
