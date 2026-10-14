@@ -9,19 +9,15 @@ const NOTES: Migration = Migration::new("0001_notes", "CREATE TABLE notes (body 
 
 #[get("/notes/count")]
 async fn count_notes(db: Turso) -> AutumnResult<String> {
-    let rows = db
-        .query("SELECT count(*) FROM notes", ())
-        .await
-        .map_err(AutumnError::internal_server_error)?;
-    let count: i64 = rows[0].get(0).map_err(AutumnError::internal_server_error)?;
+    let rows = db.query("SELECT count(*) FROM notes", ()).await?;
+    let count: i64 = rows[0].get(0)?;
     Ok(count.to_string())
 }
 
 #[get("/notes/add")]
 async fn add_note(db: Turso) -> AutumnResult<&'static str> {
     db.execute("INSERT INTO notes (body) VALUES ('hi')", ())
-        .await
-        .map_err(AutumnError::internal_server_error)?;
+        .await?;
     Ok("ok")
 }
 
@@ -41,6 +37,11 @@ fn contract_declares_autumn_0_8() {
     let contract = TursoPlugin::new().contract().expect("contract");
     assert_eq!(contract.plugin, "autumn-plugin-turso");
     assert_eq!(contract.autumn_web.as_deref(), Some("0.8"));
+}
+
+#[test]
+fn name_is_the_crate_name() {
+    assert_eq!(TursoPlugin::new().name(), "autumn-plugin-turso");
 }
 
 #[test]

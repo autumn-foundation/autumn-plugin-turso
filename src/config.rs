@@ -21,13 +21,16 @@ use serde::Deserialize;
 use crate::error::{Result, TursoError};
 
 /// The environment variable prefix for this section.
-pub const ENV_PREFIX: &str = "AUTUMN_TURSO__";
+const ENV_PREFIX: &str = "AUTUMN_TURSO__";
 
 /// The URL schemes that sync accepts.
 const SYNC_SCHEMES: [&str; 4] = ["libsql://", "turso://", "https://", "http://"];
 
 /// The resolved `[turso]` configuration.
+///
+/// Make one with [`TursoConfig::new`] or [`TursoConfig::default`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TursoConfig {
     /// Open the database at startup. Default: `true`.
     pub enabled: bool,
@@ -59,7 +62,10 @@ impl Default for TursoConfig {
 }
 
 /// The `[turso.sync]` configuration. It needs the `sync` feature.
+///
+/// Make one with [`SyncConfig::new`].
 #[derive(Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SyncConfig {
     /// The remote database URL (`libsql://`, `turso://`, `https://` or
     /// `http://`).
@@ -102,10 +108,48 @@ impl fmt::Debug for SyncConfig {
 }
 
 impl TursoConfig {
-    /// The lock wait time as a [`Duration`].
+    /// The default config with this database path.
     #[must_use]
-    pub const fn busy_timeout(&self) -> Duration {
-        Duration::from_millis(self.busy_timeout_ms)
+    pub fn new(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Set `enabled`.
+    #[must_use]
+    pub const fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Set `read_only`.
+    #[must_use]
+    pub const fn read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    /// Set the lock wait time. The value is stored in milliseconds.
+    #[must_use]
+    pub fn busy_timeout(mut self, timeout: Duration) -> Self {
+        self.busy_timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+        self
+    }
+
+    /// Set `migrate_on_start`.
+    #[must_use]
+    pub const fn migrate_on_start(mut self, migrate: bool) -> Self {
+        self.migrate_on_start = migrate;
+        self
+    }
+
+    /// Set the sync config. It needs the `sync` feature.
+    #[must_use]
+    pub fn sync(mut self, sync: SyncConfig) -> Self {
+        self.sync = Some(sync);
+        self
     }
 
     /// Apply the file and environment layers in `sources` on top of `base`.
@@ -180,6 +224,19 @@ impl TursoConfig {
                 "`turso.read_only` and `[turso.sync]` cannot be used together".into(),
             ));
         }
+        if let Some(token) = &sync.auth_token
+            && (token.trim().is_empty() || token.trim().chars().any(char::is_control))
+        {
+            return Err(TursoError::Config(
+                "`turso.sync.auth_token` is empty or has control characters".into(),
+            ));
+        }
+        if sync.token().is_some() && url.starts_with("http://") && !is_loopback(url) {
+            return Err(TursoError::Config(
+                "`turso.sync.url` uses http:// with an auth token; use https:// or libsql://"
+                    .into(),
+            ));
+        }
         if cfg!(feature = "sync") {
             Ok(())
         } else {
@@ -243,6 +300,31 @@ impl TursoConfig {
 }
 
 impl SyncConfig {
+    /// The default sync config for the remote database at `url`.
+    #[must_use]
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: Some(url.into()),
+            ..Self::default()
+        }
+    }
+
+    /// Set the auth token.
+    #[must_use]
+    pub fn auth_token(mut self, token: impl Into<String>) -> Self {
+        self.auth_token = Some(token.into());
+        self
+    }
+
+    /// The auth token without white space at the ends. `None` when empty.
+    #[must_use]
+    pub fn token(&self) -> Option<&str> {
+        self.auth_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+    }
+
     fn apply(&mut self, patch: SyncPatch) {
         let SyncPatch {
             url,
@@ -285,8 +367,8 @@ impl ConfigSources {
         }
     }
 
-    /// Read the process: `AUTUMN_MANIFEST_DIR` first, then the current
-    /// directory, and all `AUTUMN_TURSO__*` variables.
+    /// Read config files from `AUTUMN_MANIFEST_DIR`, then from the current
+    /// directory. Read all `AUTUMN_TURSO__*` variables.
     #[must_use]
     pub fn from_process(profile: &str) -> Self {
         let mut dirs = Vec::new();
@@ -374,6 +456,20 @@ struct SyncPatch {
     pull_on_start: Option<bool>,
     push_on_shutdown: Option<bool>,
     interval_secs: Option<u64>,
+}
+
+/// `true` when an `http://` URL names a loopback host.
+fn is_loopback(url: &str) -> bool {
+    let rest = url.trim_start_matches("http://");
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority.strip_prefix('[').map_or_else(
+        || authority.split(':').next().unwrap_or_default(),
+        |v6| v6.split(']').next().unwrap_or_default(),
+    );
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 fn set<T>(slot: &mut T, value: Option<T>) {

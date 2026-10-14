@@ -10,15 +10,9 @@ mod sync_server;
 use sync_server::SyncServer;
 
 fn synced(dir: &tempfile::TempDir, url: &str, token: Option<String>) -> TursoConfig {
-    TursoConfig {
-        path: dir.path().join("synced.db").to_string_lossy().into_owned(),
-        sync: Some(SyncConfig {
-            url: Some(url.into()),
-            auth_token: token,
-            ..SyncConfig::default()
-        }),
-        ..TursoConfig::default()
-    }
+    let mut sync = SyncConfig::new(url);
+    sync.auth_token = token;
+    TursoConfig::new(dir.path().join("synced.db").to_string_lossy()).sync(sync)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -33,12 +27,9 @@ async fn unreachable_remote_fails_open() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn push_and_pull_need_sync() {
-    let db = Turso::open(&TursoConfig {
-        path: ":memory:".into(),
-        ..TursoConfig::default()
-    })
-    .await
-    .expect("open");
+    let db = Turso::open(&TursoConfig::new(":memory:"))
+        .await
+        .expect("open");
     assert!(matches!(
         db.push().await,
         Err(TursoError::SyncNotConfigured)

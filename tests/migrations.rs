@@ -9,10 +9,7 @@ const INDEX: Migration = Migration::new(
 );
 
 async fn memory() -> Turso {
-    let config = TursoConfig {
-        path: ":memory:".into(),
-        ..TursoConfig::default()
-    };
+    let config = TursoConfig::new(":memory:");
     Turso::open(&config).await.expect("open")
 }
 
@@ -108,7 +105,7 @@ async fn empty_id_is_rejected() {
         .migrate(&[Migration::new("", "SELECT 1;")])
         .await
         .expect_err("empty id");
-    assert!(matches!(err, TursoError::Migration { .. }), "{err:?}");
+    assert!(matches!(err, TursoError::InvalidMigration), "{err:?}");
 }
 
 #[test]
@@ -124,22 +121,15 @@ fn checksum_is_stable_and_content_based() {
 async fn read_only_with_pending_fails() {
     let dir = tempfile::tempdir().expect("dir");
     let path = dir.path().join("ro.db").to_string_lossy().into_owned();
-    let rw = Turso::open(&TursoConfig {
-        path: path.clone(),
-        ..TursoConfig::default()
-    })
-    .await
-    .expect("rw");
+    let rw = Turso::open(&TursoConfig::new(path.clone()))
+        .await
+        .expect("rw");
     rw.migrate(&[CREATE]).await.expect("migrate");
     rw.close().await;
 
-    let ro = Turso::open(&TursoConfig {
-        path,
-        read_only: true,
-        ..TursoConfig::default()
-    })
-    .await
-    .expect("ro");
+    let ro = Turso::open(&TursoConfig::new(path).read_only(true))
+        .await
+        .expect("ro");
     assert_eq!(ro.migrate(&[CREATE]).await.expect("nothing pending"), 0);
     let err = ro
         .migrate(&[CREATE, INDEX])

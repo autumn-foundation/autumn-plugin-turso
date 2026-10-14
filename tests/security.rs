@@ -7,14 +7,8 @@ const TOKEN: &str = "very-secret-token";
 
 #[test]
 fn debug_hides_the_auth_token() {
-    let config = TursoConfig {
-        sync: Some(SyncConfig {
-            url: Some("libsql://db.example.turso.io".into()),
-            auth_token: Some(TOKEN.into()),
-            ..SyncConfig::default()
-        }),
-        ..TursoConfig::default()
-    };
+    let config = TursoConfig::default()
+        .sync(SyncConfig::new("libsql://db.example.turso.io").auth_token(TOKEN));
     let text = format!("{config:?} {:?}", config.sync);
     assert!(!text.contains(TOKEN), "{text}");
     assert!(text.contains("<redacted>"), "{text}");
@@ -22,10 +16,7 @@ fn debug_hides_the_auth_token() {
 
 #[tokio::test]
 async fn health_details_show_no_secrets() {
-    let config = TursoConfig {
-        path: ":memory:".into(),
-        ..TursoConfig::default()
-    };
+    let config = TursoConfig::new(":memory:");
     let db = Turso::open(&config).await.expect("open");
     let output = TursoHealthIndicator::for_handle(db).check().await;
     let mut keys: Vec<_> = output.details.keys().cloned().collect();

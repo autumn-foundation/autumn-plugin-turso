@@ -103,7 +103,7 @@ impl Turso {
                 path,
                 read_only: config.read_only,
                 synced,
-                busy_timeout: config.busy_timeout(),
+                busy_timeout: std::time::Duration::from_millis(config.busy_timeout_ms),
                 counters: Counters::default(),
             }),
         };
@@ -114,7 +114,7 @@ impl Turso {
         Ok(handle)
     }
 
-    /// Open a new connection. A connection is cheap. Use one per task.
+    /// Open a new connection. Use one connection per task.
     ///
     /// # Errors
     ///
@@ -166,13 +166,17 @@ impl Turso {
         self.count(result)
     }
 
-    /// Run `SELECT 1`.
+    /// Run `SELECT 1`. The metrics do not count it, because health probes
+    /// call it often.
     ///
     /// # Errors
     ///
     /// Returns the engine error, or [`TursoError::Closed`].
     pub async fn ping(&self) -> Result<()> {
-        self.query("SELECT 1", ()).await.map(drop)
+        let conn = self.connect_inner().await?;
+        let mut rows = conn.query("SELECT 1", ()).await?;
+        while rows.next().await?.is_some() {}
+        Ok(())
     }
 
     /// Apply the pending `migrations` in order. Return how many ran.
@@ -180,8 +184,9 @@ impl Turso {
     /// # Errors
     ///
     /// Returns [`TursoError::DuplicateMigration`],
-    /// [`TursoError::MigrationChecksum`], [`TursoError::ReadOnlyPending`] or
-    /// [`TursoError::Migration`]. A failed migration is rolled back.
+    /// [`TursoError::MigrationChecksum`], [`TursoError::ReadOnlyPending`],
+    /// [`TursoError::Migration`], [`TursoError::Closed`] or an engine error.
+    /// The plugin rolls back a failed migration.
     pub async fn migrate(&self, migrations: &[Migration]) -> Result<usize> {
         let result = self.migrate_inner(migrations).await;
         self.count(result)
@@ -194,6 +199,11 @@ impl Turso {
     /// Returns [`TursoError::DuplicateMigration`],
     /// [`TursoError::MigrationChecksum`] or an engine error.
     pub async fn pending(&self, migrations: &[Migration]) -> Result<Vec<String>> {
+        let result = self.pending_inner(migrations).await;
+        self.count(result)
+    }
+
+    async fn pending_inner(&self, migrations: &[Migration]) -> Result<Vec<String>> {
         migrate::check_list(migrations)?;
         let conn = self.connect_inner().await?;
         let applied = applied_checksums(&conn).await?;
@@ -203,8 +213,9 @@ impl Turso {
             .collect())
     }
 
-    /// Close the handle. All clones see the close. Later calls return
-    /// [`TursoError::Closed`]. A second close does nothing.
+    /// Close the handle and all its clones. Later calls return
+    /// [`TursoError::Closed`]. A second close does nothing. A connection
+    /// from [`connect`](Self::connect) stays open until you drop it.
     pub async fn close(&self) {
         self.inner.closed.store(true, Ordering::SeqCst);
         self.inner.backend.write().await.take();
@@ -379,8 +390,8 @@ async fn open_backend(config: &TursoConfig, path: &str) -> Result<Backend> {
         let mut builder = turso::sync::Builder::new_remote(path)
             .with_remote_url(sync.url.clone().unwrap_or_default())
             .with_client_name(concat!("autumn-plugin-turso/", env!("CARGO_PKG_VERSION")));
-        if let Some(token) = &sync.auth_token {
-            builder = builder.with_auth_token(token.clone());
+        if let Some(token) = sync.token() {
+            builder = builder.with_auth_token(token.to_owned());
         }
         let db = builder
             .build()
@@ -400,6 +411,7 @@ async fn open_backend(config: &TursoConfig, path: &str) -> Result<Backend> {
 }
 
 fn make_parent_dir(path: &str) -> Result<()> {
+    // Turso parses `file:` URIs itself (`turso_core::OpenOptions::parse`).
     if path == ":memory:" || path.starts_with("file:") {
         return Ok(());
     }

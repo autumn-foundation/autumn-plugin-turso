@@ -22,7 +22,7 @@ pub enum TursoError {
     #[error("turso: {0}")]
     Database(#[from] turso::Error),
 
-    /// A migration failed. The plugin rolled it back.
+    /// A migration failed. The plugin tried to roll it back.
     #[error("turso migration `{id}` failed: {message}")]
     Migration {
         /// The migration id.
@@ -30,6 +30,10 @@ pub enum TursoError {
         /// The cause.
         message: String,
     },
+
+    /// A migration id is empty.
+    #[error("a turso migration id is empty")]
+    InvalidMigration,
 
     /// An applied migration changed after it was applied.
     #[error(
@@ -65,7 +69,7 @@ pub enum TursoError {
     #[error("`[turso.sync]` is set, but the `sync` feature of autumn-plugin-turso is off")]
     SyncFeatureDisabled,
 
-    /// A sync operation is called on a database without sync.
+    /// You called a sync operation on a local database.
     #[error("turso sync is not configured for this database")]
     SyncNotConfigured,
 

@@ -12,13 +12,13 @@ mod slot;
 #[path = "../tests/support/sync_server.rs"]
 mod sync_server;
 
-pub use config::{ConfigSources, ENV_PREFIX, SyncConfig, TursoConfig};
-pub use error::{Result, TursoError};
+pub use config::{ConfigSources, SyncConfig, TursoConfig};
+pub use error::TursoError;
 pub use handle::{Turso, TursoStats};
 pub use health::TursoHealthIndicator;
 pub use metrics::TursoMetricsSource;
 pub use migrate::{MIGRATIONS_TABLE, Migration};
-pub use plugin::{NAME, TursoPlugin};
+pub use plugin::TursoPlugin;
 
 /// The `turso` crate, so the app uses the same version.
 pub use turso;

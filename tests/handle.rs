@@ -4,10 +4,7 @@ use autumn_plugin_turso::turso::Value;
 use autumn_plugin_turso::{Turso, TursoConfig, TursoError};
 
 fn memory() -> TursoConfig {
-    TursoConfig {
-        path: ":memory:".into(),
-        ..TursoConfig::default()
-    }
+    TursoConfig::new(":memory:")
 }
 
 const fn assert_handle_traits<T: Clone + Send + Sync + 'static>() {}
@@ -71,10 +68,7 @@ async fn clones_share_state() {
 #[tokio::test]
 async fn file_data_survives_reopen() {
     let dir = tempfile::tempdir().expect("dir");
-    let config = TursoConfig {
-        path: dir.path().join("app.db").to_string_lossy().into_owned(),
-        ..TursoConfig::default()
-    };
+    let config = TursoConfig::new(dir.path().join("app.db").to_string_lossy().into_owned());
     {
         let db = Turso::open(&config).await.expect("open");
         db.execute_batch("CREATE TABLE t (x TEXT); INSERT INTO t VALUES ('kept');")
@@ -94,10 +88,7 @@ async fn file_data_survives_reopen() {
 async fn open_creates_missing_parent_dirs() {
     let dir = tempfile::tempdir().expect("dir");
     let path = dir.path().join("nested/deeper/app.db");
-    let config = TursoConfig {
-        path: path.to_string_lossy().into_owned(),
-        ..TursoConfig::default()
-    };
+    let config = TursoConfig::new(path.to_string_lossy().into_owned());
     let db = Turso::open(&config).await.expect("open");
     db.ping().await.expect("ping");
     assert!(path.parent().expect("parent").is_dir());
@@ -107,21 +98,14 @@ async fn open_creates_missing_parent_dirs() {
 async fn read_only_rejects_writes() {
     let dir = tempfile::tempdir().expect("dir");
     let path = dir.path().join("ro.db").to_string_lossy().into_owned();
-    let rw = TursoConfig {
-        path: path.clone(),
-        ..TursoConfig::default()
-    };
+    let rw = TursoConfig::new(path.clone());
     let db = Turso::open(&rw).await.expect("open rw");
     db.execute_batch("CREATE TABLE t (x INTEGER);")
         .await
         .expect("create");
     db.close().await;
 
-    let ro = TursoConfig {
-        path,
-        read_only: true,
-        ..TursoConfig::default()
-    };
+    let ro = TursoConfig::new(path).read_only(true);
     let db = Turso::open(&ro).await.expect("open ro");
     assert!(db.is_read_only());
     db.query("SELECT x FROM t", ()).await.expect("read works");
@@ -146,10 +130,7 @@ async fn bad_sql_is_a_typed_error() {
 
 #[tokio::test]
 async fn invalid_config_does_not_open() {
-    let config = TursoConfig {
-        path: String::new(),
-        ..TursoConfig::default()
-    };
+    let config = TursoConfig::new(String::new());
     let err = Turso::open(&config).await.expect_err("invalid");
     assert!(matches!(err, TursoError::Config(_)), "{err:?}");
 }
@@ -208,4 +189,19 @@ async fn handle_futures_are_send() {
     let fut = db.query("SELECT 1", ());
     assert_send(&fut);
     let _ = fut.await;
+    assert_send(&db.connect());
+    assert_send(&db.execute_batch("SELECT 1"));
+    assert_send(&db.ping());
+    assert_send(&db.migrate(&[]));
+    assert_send(&db.pending(&[]));
+    assert_send(&db.close());
+}
+
+#[tokio::test]
+async fn ping_is_not_counted_as_a_statement() {
+    let db = Turso::open(&memory()).await.expect("open");
+    db.ping().await.expect("ping");
+    assert_eq!(db.stats().statements, 0);
+    db.execute("CREATE TABLE t (x INTEGER)", ()).await.expect("execute");
+    assert_eq!(db.stats().statements, 1);
 }

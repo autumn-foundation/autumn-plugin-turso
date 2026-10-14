@@ -30,8 +30,9 @@ Question: "How can we make this plugin fail?" Each answer gives a control.
 
 | How to make it fail | Control |
 | --- | --- |
-| Pull in a global allocator that the app does not want. | Disable Turso default features (`mimalloc`). |
+| Add a global allocator that the app does not want. | Disable Turso default features (`mimalloc`). |
 | Leak the auth token in logs or health output. | `Debug` hides the token. Health shows no URL or token. |
+| Send the token over plain `http://`. | Reject a token with an `http://` URL that is not loopback. |
 | A typo in `[turso]` is ignored. | Unknown keys fail startup. `config_section("turso")` keeps strict mode. |
 | Someone edits an applied migration. | Store a checksum. A changed checksum fails startup. |
 | Two migrations use one id. | Fail startup and name the id. |
@@ -45,16 +46,16 @@ Question: "How can we make this plugin fail?" Each answer gives a control.
 
 ## 3. Six thinking hats
 
-- **White (facts).** `turso` 0.8.3 is async. `Database::connect` is cheap.
+- **White (facts).** `turso` 0.8.3 is async. It has no pool API.
   Sync is behind the `sync` feature. Autumn reads plugin config after
   `Plugin::build`, so the plugin resolves its config in a startup hook.
   `TestApp` runs plugin startup hooks but not shutdown hooks.
-- **Red (feelings).** Users want "one line to add, it just works". A default
-  file under `data/` feels safe. Surprise errors feel bad, so messages name the
-  key, the value and the fix.
+- **Red (feelings).** Users want to add the plugin with one line. A default
+  file under `data/` feels safe. Unclear errors make users angry, so messages
+  name the key and the value.
 - **Black (risks).** Turso is young; its API can change. We pin `0.8` and wrap
-  the API. Sync tests need a server; CI has none. We test sync config and
-  failure paths only, and keep one `#[ignore]` live test.
+  the API. Sync tests need a server. CI builds `tursodb` and runs a local
+  sync server. One `#[ignore]` test also runs against Turso Cloud.
 - **Yellow (benefits).** No Diesel, no C toolchain, no server. Fast local
   tests on `:memory:`. Same SQL dialect as SQLite.
 - **Green (ideas).** A `Turso` extractor. A `Migration` list as `const` data.

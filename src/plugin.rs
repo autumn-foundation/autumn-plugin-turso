@@ -1,5 +1,6 @@
-//! `TursoPlugin`: wires the database into an Autumn app.
+//! `TursoPlugin`: connects the database to an Autumn app.
 
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -16,8 +17,8 @@ use crate::metrics::TursoMetricsSource;
 use crate::migrate::Migration;
 use crate::slot::{Slot, SlotState};
 
-/// The config section and the health and metrics name.
-pub const NAME: &str = "turso";
+/// The name of the config section, health indicator and metrics source.
+const NAME: &str = "turso";
 
 /// Installs a Turso database in an Autumn app.
 ///
@@ -108,6 +109,11 @@ impl TursoPlugin {
 }
 
 impl Plugin for TursoPlugin {
+    /// One database per app. A second `TursoPlugin` is skipped with a warning.
+    fn name(&self) -> Cow<'static, str> {
+        Cow::Borrowed(env!("CARGO_PKG_NAME"))
+    }
+
     fn contract(&self) -> Option<PluginContract> {
         Some(
             PluginContract::new(env!("CARGO_PKG_NAME"))
@@ -290,15 +296,9 @@ mod tests {
     use crate::sync_server;
 
     fn synced(dir: &tempfile::TempDir, url: &str, interval_secs: u64) -> TursoConfig {
-        TursoConfig {
-            path: dir.path().join("db").to_string_lossy().into_owned(),
-            sync: Some(SyncConfig {
-                url: Some(url.to_owned()),
-                interval_secs,
-                ..SyncConfig::default()
-            }),
-            ..TursoConfig::default()
-        }
+        let mut sync = SyncConfig::new(url);
+        sync.interval_secs = interval_secs;
+        TursoConfig::new(dir.path().join("db").to_string_lossy()).sync(sync)
     }
 
     async fn count(db: &Turso) -> i64 {

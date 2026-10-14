@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
@@ -51,10 +54,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/tursodb
-          key: tursodb-v0.8.3-${{ runner.os }}
+          key: tursodb-607bff9f-${{ runner.os }}
       - name: Install tursodb
         if: steps.tursodb.outputs.cache-hit != 'true'
-        run: cargo install --git https://github.com/tursodatabase/turso --tag v0.8.3 turso_cli --locked --root ~/tursodb
+        run: cargo install --git https://github.com/tursodatabase/turso --rev 607bff9fd0e547a25a97b3bf06e83bcc5d99d53c turso_cli --locked --root ~/tursodb
       - name: Run sync tests
         run: |
           export TURSODB_BIN="$HOME/tursodb/bin/tursodb"

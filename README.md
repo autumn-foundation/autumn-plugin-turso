@@ -23,11 +23,8 @@ const NOTES: Migration = Migration::new("0001_notes", "CREATE TABLE notes (body 
 
 #[get("/notes/count")]
 async fn count(db: Turso) -> AutumnResult<String> {
-    let rows = db
-        .query("SELECT count(*) FROM notes", ())
-        .await
-        .map_err(AutumnError::internal_server_error)?;
-    let n: i64 = rows[0].get(0).map_err(AutumnError::internal_server_error)?;
+    let rows = db.query("SELECT count(*) FROM notes", ()).await?;
+    let n: i64 = rows[0].get(0)?;
     Ok(n.to_string())
 }
 
@@ -49,8 +46,11 @@ At startup the plugin:
 4. Puts a `Turso` handle in `AppState`.
 
 Get the handle in a handler with `db: Turso`, or with
-`state.extension::<Turso>()`. If the plugin is not installed, the extractor
-returns `500`.
+`state.extension::<Turso>()`. If the plugin is not installed or is disabled,
+the extractor returns `500`.
+
+An app has one Turso database. A second `TursoPlugin` is skipped with a
+warning.
 
 ## Handle
 
@@ -64,10 +64,11 @@ returns `500`.
 | `migrate(&[Migration])` | The number of applied migrations. |
 | `pending(&[Migration])` | The ids that are not applied. |
 | `push()`, `pull()` | Sync with Turso Cloud (feature `sync`). |
-| `close()` | Closes the handle for all clones. |
+| `close()` | Closes the handle and all its clones. |
 
 All calls return `Result<_, TursoError>`. After `close`, calls return
-`TursoError::Closed`. The crate re-exports `turso`, so you can use
+`TursoError::Closed`. A connection from `connect()` stays open until you drop
+it. The crate re-exports `turso`, so you can use
 `autumn_plugin_turso::turso::Value`.
 
 ## Configuration
@@ -101,6 +102,14 @@ Layers (lowest first):
 An unknown key, an unknown `AUTUMN_TURSO__*` variable or a bad value stops
 startup. The message names the key.
 
+These sync settings also stop startup:
+
+- `read_only = true` together with `[turso.sync]`.
+- An empty `auth_token`, or one with control characters. The plugin removes
+  white space at the ends of the token.
+- An `auth_token` with an `http://` URL to a host that is not loopback. Use
+  `https://` or `libsql://`. This keeps the token encrypted on the network.
+
 ## Migrations
 
 ```rust
@@ -113,7 +122,8 @@ const MIGRATIONS: [Migration; 2] = [
 ```
 
 - Migrations run in the order you add them.
-- Each migration runs in one transaction. A failure rolls it back.
+- Each migration runs in one transaction. The plugin rolls back a failed
+  migration.
 - The table `_autumn_turso_migrations` records each id and checksum.
 - Do not edit an applied migration. A changed checksum stops startup.
   Add a new migration.
@@ -124,12 +134,14 @@ const MIGRATIONS: [Migration; 2] = [
 - `/actuator/health` has a `turso` component. It is `UP` when `SELECT 1`
   works. It is `DOWN` when the handle is closed or the query fails. Details
   show `path`, `mode` and `read_only`. They never show the sync URL or token.
+  Autumn shows details only when `health.detailed` is on (the `dev` profile
+  default).
 - `/actuator/prometheus` has `turso_up` and these counters:
   `turso_statements_total`, `turso_errors_total`,
   `turso_connections_opened_total`, `turso_migrations_applied_total`,
   `turso_sync_pushes_total`, `turso_sync_pulls_total`,
-  `turso_sync_errors_total`. Statements on a connection from `connect()`
-  are not counted.
+  `turso_sync_errors_total`. The counters do not count statements on a
+  connection from `connect()`, or the health `ping()`.
 
 ## Shutdown
 
@@ -143,17 +155,26 @@ closes the handle.
 | `sync` | Turso Cloud sync. |
 | `fts` | Full-text search in the engine. |
 
-The crate turns off the Turso `mimalloc` feature. It does not set a global
-allocator.
+The crate disables all Turso default features (`mimalloc` and `fts`). Thus it
+does not set a global allocator. Enable the `fts` feature of this crate to get
+full-text search.
+
+Use the re-exported `autumn_plugin_turso::turso`. If you also add `turso` to
+your own `Cargo.toml`, set `default-features = false`. If you do not, Cargo
+enables `mimalloc` and Turso sets the global allocator.
 
 ## Limits
 
 - Use one process per database file. The plugin does not turn on the
   experimental Turso multi-process mode.
-- The Turso engine is young. Read the
+- The Turso engine is new. Read the
   [Turso compatibility notes](https://github.com/tursodatabase/turso/blob/main/COMPAT.md)
   before you use it in production.
 - This plugin does not give a Diesel pool, a session store or a cache.
+- The public API uses `turso` types. A new `turso` minor version (0.x) is a
+  breaking change of this crate.
+- The plugin makes the database directory with the process umask. On a
+  shared host, set a strict umask or make the directory before startup.
 
 ## Tests
 
@@ -165,7 +186,8 @@ TURSODB_BIN=$(which tursodb) cargo test --features sync -- --ignored --skip live
 ```
 
 Install `tursodb` with
-`cargo install --git https://github.com/tursodatabase/turso --tag v0.8.3 turso_cli`.
+`cargo install --git https://github.com/tursodatabase/turso --rev 607bff9fd0e547a25a97b3bf06e83bcc5d99d53c turso_cli --locked`
+(the `v0.8.3` tag).
 
 ## License
 

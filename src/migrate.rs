@@ -1,8 +1,8 @@
 //! Ordered, checksummed migrations.
 //!
 //! The plugin records each applied migration in `_autumn_turso_migrations`.
-//! Each migration runs in one transaction. An applied migration must not
-//! change: a changed checksum is an error.
+//! Each migration runs in one transaction. Do not change an applied
+//! migration. A changed checksum is an error.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -12,7 +12,8 @@ use crate::error::{Result, TursoError};
 /// The table that records applied migrations.
 pub const MIGRATIONS_TABLE: &str = "_autumn_turso_migrations";
 
-/// One schema change. The `id` sets the order and must be unique.
+/// One schema change. Migrations run in the order you add them. The id
+/// must be unique.
 ///
 /// ```
 /// use autumn_plugin_turso::Migration;
@@ -74,10 +75,7 @@ pub fn check_list(migrations: &[Migration]) -> Result<()> {
     let mut seen = HashSet::new();
     for migration in migrations {
         if migration.id().trim().is_empty() {
-            return Err(TursoError::Migration {
-                id: String::new(),
-                message: "the migration id is empty".into(),
-            });
+            return Err(TursoError::InvalidMigration);
         }
         if !seen.insert(migration.id()) {
             return Err(TursoError::DuplicateMigration(migration.id().to_owned()));

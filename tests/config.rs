@@ -3,7 +3,7 @@
 use std::fs;
 use std::time::Duration;
 
-use autumn_plugin_turso::{ConfigSources, TursoConfig, TursoError};
+use autumn_plugin_turso::{ConfigSources, SyncConfig, TursoConfig, TursoError};
 
 fn dir_with(files: &[(&str, &str)]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -19,7 +19,14 @@ fn defaults_are_safe() {
     assert!(config.enabled);
     assert_eq!(config.path, "data/turso.db");
     assert!(!config.read_only);
-    assert_eq!(config.busy_timeout(), Duration::from_secs(5));
+    assert_eq!(config.busy_timeout_ms, 5_000);
+    assert_eq!(
+        config
+            .clone()
+            .busy_timeout(Duration::from_secs(2))
+            .busy_timeout_ms,
+        2_000
+    );
     assert!(config.migrate_on_start);
     assert!(config.sync.is_none());
 }
@@ -27,10 +34,7 @@ fn defaults_are_safe() {
 #[test]
 fn no_files_keep_the_base() {
     let dir = dir_with(&[]);
-    let base = TursoConfig {
-        path: "builder.db".into(),
-        ..TursoConfig::default()
-    };
+    let base = TursoConfig::new("builder.db");
     let config =
         TursoConfig::resolve(base, &ConfigSources::new(dir.path(), "dev")).expect("resolve");
     assert_eq!(config.path, "builder.db");
@@ -185,10 +189,7 @@ fn broken_toml_file_fails_with_its_path() {
 
 #[test]
 fn empty_path_is_invalid() {
-    let config = TursoConfig {
-        path: "  ".into(),
-        ..TursoConfig::default()
-    };
+    let config = TursoConfig::new("  ");
     let err = config.validate().expect_err("empty path");
     assert!(err.to_string().contains("path"), "{err}");
 }
@@ -234,9 +235,55 @@ fn sync_section_needs_the_sync_feature() {
 
 #[test]
 fn memory_database_is_valid() {
-    let config = TursoConfig {
-        path: ":memory:".into(),
-        ..TursoConfig::default()
-    };
+    let config = TursoConfig::new(":memory:");
     config.validate().expect("valid");
+}
+
+#[test]
+fn builders_set_fields() {
+    let config = TursoConfig::new("x.db")
+        .enabled(false)
+        .read_only(true)
+        .migrate_on_start(false)
+        .sync(SyncConfig::new("https://db.example").auth_token(" t\n"));
+    assert_eq!(config.path, "x.db");
+    assert!(!config.enabled && config.read_only && !config.migrate_on_start);
+    let sync = config.sync.expect("sync");
+    assert_eq!(sync.url.as_deref(), Some("https://db.example"));
+    assert_eq!(sync.token(), Some("t"), "token is trimmed");
+}
+
+#[test]
+fn token_over_plain_http_is_rejected() {
+    let config =
+        TursoConfig::new("x.db").sync(SyncConfig::new("http://db.example.com").auth_token("t"));
+    let err = config.validate().expect_err("cleartext token");
+    assert!(err.to_string().contains("http://"), "{err}");
+}
+
+#[test]
+fn plain_http_is_allowed_on_loopback_or_without_token() {
+    for url in [
+        "http://127.0.0.1:8080",
+        "http://localhost:8080/db",
+        "http://[::1]:8080",
+    ] {
+        let config = TursoConfig::new("x.db").sync(SyncConfig::new(url).auth_token("t"));
+        assert!(
+            !matches!(config.validate(), Err(TursoError::Config(_))),
+            "{url} must be allowed"
+        );
+    }
+    let config = TursoConfig::new("x.db").sync(SyncConfig::new("http://db.example.com"));
+    assert!(!matches!(config.validate(), Err(TursoError::Config(_))));
+}
+
+#[test]
+fn blank_or_control_token_is_rejected() {
+    for token in ["", "  ", "ab\u{7}c"] {
+        let config =
+            TursoConfig::new("x.db").sync(SyncConfig::new("https://db.example").auth_token(token));
+        let err = config.validate().expect_err("bad token");
+        assert!(err.to_string().contains("auth_token"), "{token:?}: {err}");
+    }
 }
