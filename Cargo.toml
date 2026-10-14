@@ -1,0 +1,45 @@
+[package]
+name = "autumn-plugin-turso"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88.0"
+license = "Apache-2.0"
+description = "TursoDB plugin for Autumn: an embedded, SQLite-compatible database handle with config, migrations, health and metrics"
+repository = "https://github.com/autumn-foundation/autumn-plugin-turso"
+readme = "README.md"
+keywords = ["autumn", "turso", "sqlite", "database", "plugin"]
+categories = ["database", "web-programming"]
+
+[features]
+default = []
+# Embedded sync with Turso Cloud (push and pull).
+sync = ["turso/sync"]
+# Full-text search in the engine.
+fts = ["turso/fts"]
+
+[dependencies]
+autumn-web = { version = "0.8", default-features = false }
+axum = { version = "0.8", default-features = false }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+toml = "1"
+tracing = "0.1"
+# No default features: the default `mimalloc` sets a global allocator.
+turso = { version = "0.8.3", default-features = false }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["full", "test-util"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# False positives: `Turso` holds an `Arc`, not a lock guard.
+significant_drop_tightening = "allow"

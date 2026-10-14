@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+  test:
+    name: Test (${{ matrix.os }}, ${{ matrix.features || 'default' }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        features: ["", "sync,fts"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.features }}
+      - run: cargo test --locked --features "${{ matrix.features }}"
+
+  sync-server:
+    name: Sync (local tursodb server)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Restore tursodb
+        id: tursodb
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/tursodb
+          key: tursodb-607bff9f-${{ runner.os }}
+      - name: Install tursodb (tag v0.8.3)
+        if: steps.tursodb.outputs.cache-hit != 'true'
+        # Turso's own crates have warnings. Do not make them errors.
+        env:
+          RUSTFLAGS: ""
+        run: cargo install --git https://github.com/tursodatabase/turso --rev 607bff9fd0e547a25a97b3bf06e83bcc5d99d53c turso_cli --locked --root ~/tursodb
+      - name: Save tursodb
+        if: steps.tursodb.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/tursodb
+          key: tursodb-607bff9f-${{ runner.os }}
+      - name: Run sync tests
+        run: |
+          set -o pipefail
+          export TURSODB_BIN="$HOME/tursodb/bin/tursodb"
+          cargo test --locked --features sync -- --ignored --skip live_round_trip 2>&1 | tee test.log
+          ! grep -q 'test result: FAILED' test.log
+          # A filter that matches nothing still passes. Count the passes.
+          passed=$(grep -o '[0-9]* passed' test.log | awk '{s+=$1} END {print s}')
+          echo "passed: $passed"
+          test "$passed" -ge 7
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --locked --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --all-targets --all-features
