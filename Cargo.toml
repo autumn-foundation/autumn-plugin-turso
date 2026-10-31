@@ -1,6 +1,6 @@
 [package]
 name = "autumn-plugin-turso"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88.0"
 license = "Apache-2.0"
@@ -18,7 +18,7 @@ sync = ["turso/sync"]
 fts = ["turso/fts"]
 
 [dependencies]
-autumn-web = { version = "0.8", default-features = false }
+autumn-web = { version = "0.9", default-features = false }
 axum = { version = "0.8", default-features = false }
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
