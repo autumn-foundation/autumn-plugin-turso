@@ -1,16 +1,16 @@
 # autumn-plugin-turso
 
 A [Turso](https://github.com/tursodatabase/turso) database for
-[Autumn](https://crates.io/crates/autumn-web) 0.8. Turso is an embedded,
+[Autumn](https://crates.io/crates/autumn-web) 0.9. Turso is an embedded,
 SQLite-compatible engine. It needs no server. Turso Cloud sync is optional.
 
 ## Install
 
 ```toml
 [dependencies]
-autumn-plugin-turso = "0.1"
+autumn-plugin-turso = "0.2"
 # For Turso Cloud sync:
-# autumn-plugin-turso = { version = "0.1", features = ["sync"] }
+# autumn-plugin-turso = { version = "0.2", features = ["sync"] }
 ```
 
 ## Quick start

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-31
+
+### Changed
+
+- Support `autumn-web` 0.9. The plugin now needs `autumn-web` 0.9.
+
 ### Added
 
 - `TursoPlugin` for Autumn 0.8. It opens a Turso database at startup and
