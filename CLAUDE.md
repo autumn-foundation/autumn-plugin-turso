@@ -10,6 +10,8 @@
 
 ## Rules
 
+- README Rust snippets are doctests. Make them compile; use `no_run`, not `ignore`.
+  `tests/doc_snippets.rs` checks the TOML snippets and the version pins in the docs.
 - Use TDD: write a failing test, make it pass, then refactor.
 - Write comments and docs in ASD-STE100. Keep them short.
 - Never log or show the sync auth token.
