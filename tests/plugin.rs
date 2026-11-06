@@ -36,7 +36,7 @@ fn memory_plugin(dir: &tempfile::TempDir) -> TursoPlugin {
 fn contract_declares_autumn_0_9() {
     let contract = TursoPlugin::new().contract().expect("contract");
     assert_eq!(contract.plugin, "autumn-plugin-turso");
-    assert_eq!(contract.autumn_web.as_deref(), Some("0.9"));
+    assert_eq!(contract.autumn_web.as_deref(), Some("0.10"));
 }
 
 #[test]
@@ -91,7 +91,7 @@ async fn extractor_without_plugin_is_a_500() {
 #[tokio::test(flavor = "multi_thread")]
 async fn health_is_up_then_down_after_close() {
     let dir = tempfile::tempdir().expect("dir");
-    // Autumn 0.9 caches health results for 1 s. The test reads twice.
+    // Autumn caches health results for 1 s. The test reads twice.
     let mut config = autumn_web::config::AutumnConfig::default();
     config.health.cache_ttl_ms = 0;
     let client = TestApp::new()
