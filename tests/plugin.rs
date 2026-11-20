@@ -36,7 +36,7 @@ fn memory_plugin(dir: &tempfile::TempDir) -> TursoPlugin {
 fn contract_declares_autumn_0_9() {
     let contract = TursoPlugin::new().contract().expect("contract");
     assert_eq!(contract.plugin, "autumn-plugin-turso");
-    assert_eq!(contract.autumn_web.as_deref(), Some("0.10"));
+    assert_eq!(contract.autumn_web.as_deref(), Some("0.11"));
 }
 
 #[test]

@@ -2,6 +2,8 @@
 
 mod config;
 mod error;
+#[cfg(feature = "fleet")]
+pub mod fleet;
 mod handle;
 mod health;
 mod metrics;

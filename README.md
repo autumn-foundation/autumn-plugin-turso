@@ -1,16 +1,16 @@
 # autumn-plugin-turso
 
 A [Turso](https://github.com/tursodatabase/turso) database for
-[Autumn](https://crates.io/crates/autumn-web) 0.10. Turso is an embedded,
+[Autumn](https://crates.io/crates/autumn-web) 0.11. Turso is an embedded,
 SQLite-compatible engine. It needs no server. Turso Cloud sync is optional.
 
 ## Install
 
 ```toml
 [dependencies]
-autumn-plugin-turso = "0.3"
+autumn-plugin-turso = "0.4"
 # For Turso Cloud sync:
-# autumn-plugin-turso = { version = "0.3", features = ["sync"] }
+# autumn-plugin-turso = { version = "0.4", features = ["sync"] }
 ```
 
 ## Quick start
@@ -189,12 +189,88 @@ shutdown hook a time limit (`server.shutdown_timeout_secs`, 1 second in the
 `dev` profile). When the push does not complete, the data stays in the local
 file. The next push or start sends it.
 
+## Fleets
+
+The `fleet` feature gives each tenant (or each slot) its own Turso database
+file. Autumn core runs the fleet: keys, paths, opens, idle closes, the memory
+budget, slot ownership and fencing. The plugin gives the Turso engine and the
+`FleetTurso` extractor. The fleet needs an Autumn database backend: turn on
+the `postgres` or the `sqlite` feature of `autumn-web`.
+
+```toml
+[dependencies]
+autumn-plugin-turso = { version = "0.4", features = ["fleet"] }
+```
+
+```rust,no_run
+# #[cfg(feature = "fleet")]
+# mod example {
+use autumn_plugin_turso::fleet::{FleetTurso, TursoFleetPlugin};
+use autumn_plugin_turso::Migration;
+use autumn_web::prelude::*;
+
+const NOTES: Migration = Migration::new("0001_notes", "CREATE TABLE notes (body TEXT);");
+
+#[get("/notes/count")]
+async fn count(db: FleetTurso) -> AutumnResult<String> {
+    let rows = db.query("SELECT count(*) FROM notes", ()).await?;
+    let n: i64 = rows[0].get(0)?;
+    Ok(n.to_string())
+}
+
+pub async fn run() {
+    autumn_web::app()
+        .plugin(TursoFleetPlugin::new().migrations([NOTES]))
+        .routes(routes![count])
+        .run()
+        .await;
+}
+# }
+# fn main() {}
+```
+
+The plugin reads `[turso_fleet]`, with the same layers as `[turso]`. The top
+keys are the Autumn fleet keys, as in `[database.fleet]`. `engine` has the
+`[turso]` keys, except `path`, `read_only` and `sync`:
+
+```toml
+[turso_fleet]
+mode = "tenant"                      # One file for each tenant. "slot" gives one for each slot.
+root = "data/tenants"
+create_on_demand = true
+max_resident_bytes = 1073741824      # The memory budget of all open files.
+ship_every_secs = 60                 # The interval between two replica generations.
+resident_bytes = 16777216            # The memory that one open file counts.
+
+[turso_fleet.engine]
+busy_timeout_ms = 5000
+
+[turso_fleet.ownership]
+owner = "host-a"
+```
+
+`AUTUMN_TURSO_FLEET__ROOT` and `AUTUMN_TURSO_FLEET__OWNERSHIP__OWNER` set
+`root` and `ownership.owner`.
+
+- The extractor opens the file of the request tenant. It gives `400` with no
+  tenant and `421` when another host owns the slot. In a job, use
+  `FleetTurso::for_key(&state, tenant)`.
+- The plugin applies the migrations to each file when it opens.
+- Each file has the table `autumn_fleet_identity`. It holds the tenant key
+  and the ownership epoch. A file of another key, or of a newer epoch, does
+  not open.
+- A snapshot is a `VACUUM INTO` copy of the file.
+- The plugin closes idle files, and all files at shutdown, in each role.
+- The engine passes the Autumn fleet conformance kit
+  (`autumn_web::plugin_conformance::fleet`).
+
 ## Features
 
 | Feature | Use |
 | --- | --- |
 | `sync` | Turso Cloud sync. |
 | `fts` | Full-text search in the engine. |
+| `fleet` | One database file for each tenant or slot. See [Fleets](#fleets). |
 
 The crate disables all Turso default features (`mimalloc` and `fts`). Thus it
 does not set a global allocator. Enable the `fts` feature of this crate to get

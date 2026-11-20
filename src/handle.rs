@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use tokio::sync::RwLock;
 use turso::{Connection, IntoParams, Row};
@@ -23,6 +23,8 @@ pub struct Turso {
 struct Inner {
     backend: RwLock<Option<Backend>>,
     closed: AtomicBool,
+    /// Helper calls that run now.
+    busy: AtomicUsize,
     path: String,
     read_only: bool,
     synced: bool,
@@ -102,6 +104,7 @@ impl Turso {
             inner: Arc::new(Inner {
                 backend: RwLock::new(Some(backend)),
                 closed: AtomicBool::new(false),
+                busy: AtomicUsize::new(0),
                 path,
                 read_only: config.read_only,
                 synced,
@@ -133,6 +136,7 @@ impl Turso {
     ///
     /// Returns the engine error, or [`TursoError::Closed`].
     pub async fn execute(&self, sql: &str, params: impl IntoParams + Send) -> Result<u64> {
+        let _busy = self.busy();
         let result = async { Ok(self.statement_conn().await?.execute(sql, params).await?) }.await;
         self.count(result)
     }
@@ -143,6 +147,7 @@ impl Turso {
     ///
     /// Returns the engine error, or [`TursoError::Closed`].
     pub async fn execute_batch(&self, sql: &str) -> Result<()> {
+        let _busy = self.busy();
         let result = async { Ok(self.statement_conn().await?.execute_batch(sql).await?) }.await;
         self.count(result)
     }
@@ -156,6 +161,7 @@ impl Turso {
     ///
     /// Returns the engine error, or [`TursoError::Closed`].
     pub async fn query(&self, sql: &str, params: impl IntoParams + Send) -> Result<Vec<Row>> {
+        let _busy = self.busy();
         let result = async {
             let mut rows = self.statement_conn().await?.query(sql, params).await?;
             let mut out = Vec::new();
@@ -190,6 +196,7 @@ impl Turso {
     /// [`TursoError::Migration`], [`TursoError::Closed`] or an engine error.
     /// The plugin rolls back a failed migration.
     pub async fn migrate(&self, migrations: &[Migration]) -> Result<usize> {
+        let _busy = self.busy();
         let result = self.migrate_inner(migrations).await;
         self.count(result)
     }
@@ -384,12 +391,66 @@ impl Turso {
         Ok(applied)
     }
 
+    /// Marks a helper call as running until the guard drops.
+    fn busy(&self) -> Busy<'_> {
+        self.inner.busy.fetch_add(1, Ordering::AcqRel);
+        Busy(&self.inner.busy)
+    }
+
+    /// `true` while a helper call runs.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn is_busy(&self) -> bool {
+        self.inner.busy.load(Ordering::Acquire) > 0
+    }
+
+    /// Closes the handle on the calling thread. The fleet calls it.
+    ///
+    /// Later calls return [`TursoError::Closed`]. The database closes when
+    /// the last connection drops.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn close_now(&self) {
+        self.inner.closed.store(true, Ordering::SeqCst);
+        // A reader holds the lock only to clone the backend.
+        loop {
+            if let Ok(mut backend) = self.inner.backend.try_write() {
+                backend.take();
+                return;
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    /// Writes a copy of the database to `target` with `VACUUM INTO`.
+    #[cfg(feature = "fleet")]
+    pub(crate) async fn vacuum_into(&self, target: &std::path::Path) -> Result<()> {
+        let _busy = self.busy();
+        let conn = self.connect_inner().await?;
+        conn.execute(&vacuum_into_sql(target), ()).await?;
+        Ok(())
+    }
+
     fn count<T>(&self, result: Result<T>) -> Result<T> {
         if result.is_err() {
             self.inner.counters.errors.fetch_add(1, Ordering::Relaxed);
         }
         result
     }
+}
+
+/// Counts one running helper call.
+struct Busy<'a>(&'a AtomicUsize);
+
+impl Drop for Busy<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// The `VACUUM INTO` statement for `target`, with the path as a quoted literal.
+#[cfg(feature = "fleet")]
+pub fn vacuum_into_sql(target: &std::path::Path) -> String {
+    let path = target.display().to_string().replace('\'', "''");
+    format!("VACUUM INTO '{path}'")
 }
 
 async fn open_backend(config: &TursoConfig, path: &str) -> Result<Backend> {

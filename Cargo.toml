@@ -1,6 +1,6 @@
 [package]
 name = "autumn-plugin-turso"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.97.0"
 license = "Apache-2.0"
@@ -16,11 +16,14 @@ default = []
 sync = ["turso/sync"]
 # Full-text search in the engine.
 fts = ["turso/fts"]
+# A fleet of Turso files: one file for each tenant or slot.
+fleet = ["autumn-web/db", "dep:http"]
 
 [dependencies]
-autumn-web = { version = "0.10", default-features = false }
+autumn-web = { version = "0.11", default-features = false }
 axum = { version = "0.8", default-features = false }
 futures = "0.3"
+http = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -31,6 +34,7 @@ tracing = "0.1"
 turso = { version = "0.8.3", default-features = false }
 
 [dev-dependencies]
+autumn-web = { version = "0.11", default-features = false, features = ["plugin-conformance", "sqlite"] }
 tempfile = "3"
 tokio = { version = "1", features = ["full", "test-util"] }
 
