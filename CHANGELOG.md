@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-20
+
+### Changed
+
+- **Breaking:** Support `autumn-web` 0.11. The plugin now needs `autumn-web`
+  0.11. Apps on `autumn-web` 0.10 stay on 0.3.0.
+
+### Added
+
+- The `fleet` feature: `TursoEngine`, `TursoFleetPlugin` and the
+  `FleetTurso` extractor. Each tenant or slot gets its own Turso database file
+  in an Autumn database fleet. The engine passes the Autumn fleet conformance
+  kit.
+
+### Known issues
+
+- The `fts` feature does not compile on Rust 1.100 or later. The cause is in
+  Turso 0.8.3. Use Rust 1.99 for `fts` until a Turso release fixes it.
+
 ## [0.3.0] - 2026-11-06
 
 ### Changed

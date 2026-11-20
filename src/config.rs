@@ -23,6 +23,19 @@ use crate::error::{Result, TursoError};
 /// The environment variable prefix for this section.
 const ENV_PREFIX: &str = "AUTUMN_TURSO__";
 
+/// The variable prefix of `[turso_fleet]`.
+#[cfg(feature = "fleet")]
+pub const FLEET_ENV_PREFIX: &str = "AUTUMN_TURSO_FLEET__";
+
+/// `true` for a variable that a config source keeps.
+fn kept_var(key: &str) -> bool {
+    #[cfg(feature = "fleet")]
+    if key.starts_with(FLEET_ENV_PREFIX) {
+        return true;
+    }
+    key.starts_with(ENV_PREFIX)
+}
+
 /// The URL schemes that sync accepts.
 const SYNC_SCHEMES: [&str; 4] = ["libsql://", "turso://", "https://", "http://"];
 
@@ -260,6 +273,16 @@ impl TursoConfig {
         self.sync.as_ref().filter(|sync| sync.enabled)
     }
 
+    /// Applies the keys of a TOML table, as `[turso]` does.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn with_table(mut self, table: toml::Table, label: &str) -> Result<Self> {
+        let patch: Patch = toml::Value::Table(table)
+            .try_into()
+            .map_err(|err| TursoError::Config(format!("[{label}]: {err}")))?;
+        self.apply(patch);
+        Ok(self)
+    }
+
     fn apply(&mut self, patch: Patch) {
         let Patch {
             enabled,
@@ -438,12 +461,9 @@ impl ConfigSources {
             .unwrap_or_else(|| profile.to_owned());
         let mut env: BTreeMap<String, String> = dotenv
             .into_iter()
-            .filter(|(key, _)| key.starts_with(ENV_PREFIX))
+            .filter(|(key, _)| kept_var(key))
             .collect();
-        env.extend(
-            os.into_iter()
-                .filter(|(key, _)| key.starts_with(ENV_PREFIX)),
-        );
+        env.extend(os.into_iter().filter(|(key, _)| kept_var(key)));
         Self {
             dirs,
             profile: profile.to_owned(),
@@ -463,6 +483,50 @@ impl ConfigSources {
     #[must_use]
     pub fn profile(&self) -> &str {
         &self.profile
+    }
+
+    /// Merges `[section]` of `autumn.toml`, its inline profile and
+    /// `autumn-<profile>.toml`. No variables apply.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn section_table(&self, section: &str) -> Result<toml::Table> {
+        fn merge(into: &mut toml::Table, layer: Option<&toml::Value>, label: &str) -> Result<()> {
+            match layer {
+                None => Ok(()),
+                Some(toml::Value::Table(table)) => {
+                    deep_merge(into, table);
+                    Ok(())
+                }
+                Some(_) => Err(TursoError::Config(format!("[{label}] must be a table"))),
+            }
+        }
+        let mut merged = toml::Table::new();
+        if let Some((_, root)) = self.read_toml("autumn.toml")? {
+            merge(&mut merged, root.get(section), section)?;
+            for name in inline_profile_names(&self.profile) {
+                let layer = root
+                    .get("profile")
+                    .and_then(|profiles| profiles.get(name))
+                    .and_then(|profile| profile.get(section));
+                merge(&mut merged, layer, section)?;
+            }
+        }
+        let file_names = autumn_web::config::profile_override_file_lookup_names(
+            &self.profile,
+            &self.profile_input,
+        );
+        for name in file_names {
+            if let Some((_, root)) = self.read_toml(&format!("autumn-{name}.toml"))? {
+                merge(&mut merged, root.get(section), section)?;
+                break;
+            }
+        }
+        Ok(merged)
+    }
+
+    /// The value of a kept variable.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn var(&self, key: &str) -> Option<&str> {
+        self.env.get(key).map(String::as_str)
     }
 
     /// Find `name` in the first directory that has it and parse it.
@@ -543,6 +607,18 @@ fn is_loopback(url: &str) -> bool {
         || host
             .parse::<std::net::IpAddr>()
             .is_ok_and(|ip| ip.is_loopback())
+}
+
+#[cfg(feature = "fleet")]
+fn deep_merge(into: &mut toml::Table, layer: &toml::Table) {
+    for (key, value) in layer {
+        match (into.get_mut(key), value) {
+            (Some(toml::Value::Table(old)), toml::Value::Table(new)) => deep_merge(old, new),
+            _ => {
+                into.insert(key.clone(), value.clone());
+            }
+        }
+    }
 }
 
 fn set<T>(slot: &mut T, value: Option<T>) {
