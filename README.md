@@ -276,6 +276,11 @@ The crate disables all Turso default features (`mimalloc` and `fts`). Thus it
 does not set a global allocator. Enable the `fts` feature of this crate to get
 full-text search.
 
+Turso 0.8.3 `fts` does not compile on Rust 1.100 or later. Rust 1.100 adds
+`Vec::new_in`, and it hides a Turso method of the same name. Build `fts` with
+Rust 1.99 until a Turso release fixes this. Without `fts`, the crate builds on
+Rust 1.100.
+
 Use the re-exported `autumn_plugin_turso::turso`. If you also add `turso` to
 your own `Cargo.toml`, set `default-features = false`. If you do not, Cargo
 enables `mimalloc` and Turso sets the global allocator.

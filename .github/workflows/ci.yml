@@ -22,7 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # turso_core 0.8.3 `fts` does not compile on Rust 1.100: the new
+      # `Vec::new_in` shadows its `DynVec::new_in`. Move to stable when a
+      # turso release fixes it.
+      - uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
@@ -40,7 +43,10 @@ jobs:
         features: ["", "sync,fts"]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # turso_core 0.8.3 `fts` does not compile on Rust 1.100: the new
+      # `Vec::new_in` shadows its `DynVec::new_in`. Move to stable when a
+      # turso release fixes it.
+      - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.features }}
@@ -51,7 +57,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # turso_core 0.8.3 `fts` does not compile on Rust 1.100: the new
+      # `Vec::new_in` shadows its `DynVec::new_in`. Move to stable when a
+      # turso release fixes it.
+      - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
       - name: Restore tursodb
         id: tursodb
@@ -87,9 +96,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # turso_core 0.8.3 `fts` does not compile on Rust 1.100: the new
+      # `Vec::new_in` shadows its `DynVec::new_in`. Move to stable when a
+      # turso release fixes it.
+      - uses: dtolnay/rust-toolchain@1.99.0
       - uses: Swatinem/rust-cache@v2
-      - run: cargo doc --locked --no-deps --all-features
+      - run: cargo doc --locked --no-deps --all-features --features autumn-web/sqlite
         env:
           RUSTDOCFLAGS: -D warnings
 

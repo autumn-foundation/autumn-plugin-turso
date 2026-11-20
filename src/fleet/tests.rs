@@ -31,6 +31,13 @@ fn control_pool(dir: &Path) -> Pool<RuntimeConnection> {
 impl FleetFixture for Fixture {
     type Engine = TursoEngine;
 
+    // The trait needs an `async fn`. This body has no `.await`. Clippy 1.99
+    // flags that. Later Clippy releases do not know the lint.
+    #[allow(
+        unknown_lints,
+        clippy::unused_async_trait_impl,
+        reason = "the FleetFixture trait sets the signature"
+    )]
     async fn fleet(
         &self,
         config: DatabaseFleetConfig,
